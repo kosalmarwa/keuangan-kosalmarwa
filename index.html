@@ -9,9 +9,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
-  <!-- Google API -->
-  <script src="https://apis.google.com/js/api.js" onload="gapiLoaded()"></script>
-  <script src="https://accounts.google.com/gsi/client" onload="gsiLoaded()"></script>
+  <!-- Google API dimuat setelah fungsi callback didefinisikan -->
   <script>
     // ─── KONFIGURASI GOOGLE SHEETS ───────────────────────────────────────────
     const GS_CLIENT_ID    = '895565907296-5n6shrl9cl45e1blap73bfduuqasl6sh.apps.googleusercontent.com';
@@ -26,15 +24,15 @@
     let gsSignedIn    = false;
 
     // Load GAPI client
-    function gapiLoaded() {
+    window.gapiLoaded = function() {
       gapi.load('client', async () => {
         await gapi.client.init({ apiKey: GS_API_KEY, discoveryDocs: [GS_DISCOVERY] });
         gsGapiReady = true;
       });
-    }
+    };
 
     // Load GSI (Google Sign-In)
-    function gsiLoaded() {
+    window.gsiLoaded = function() {
       gsTokenClient = google.accounts.oauth2.initTokenClient({
         client_id: GS_CLIENT_ID,
         scope: GS_SCOPE,
@@ -45,7 +43,7 @@
         },
       });
       gsGsiReady = true;
-    }
+    };
 
     // Sign In
     window.gsSignIn = () => new Promise((resolve, reject) => {
@@ -126,6 +124,9 @@
     window.gsIsReady = () => gsGapiReady && gsGsiReady;
     window.gsIsSignedIn = () => gsSignedIn;
   </script>
+  <!-- Google API: diletakkan di sini agar gapiLoaded() dan gsiLoaded() sudah tersedia di window -->
+  <script src="https://apis.google.com/js/api.js" onload="window.gapiLoaded()"></script>
+  <script src="https://accounts.google.com/gsi/client" onload="window.gsiLoaded()"></script>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     :root{
