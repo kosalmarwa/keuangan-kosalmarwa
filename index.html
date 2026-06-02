@@ -1134,10 +1134,24 @@ function LabaRugiTahunan({transaksi, aset, jenisLabel}) {
 
 // ─── GOOGLE SHEETS PANEL ─────────────────────────────────────────────────────
 function GSheetPanel({transaksi, kamar, aset, kewajiban, onLoad, showToast}) {
-  const [status,   setStatus]   = React.useState("idle"); // idle|loading|success|error
+  const [status,   setStatus]   = React.useState("idle");
   const [signedIn, setSignedIn] = React.useState(false);
   const [lastSync, setLastSync] = React.useState(null);
   const [msg,      setMsg]      = React.useState("");
+  const [apiReady, setApiReady] = React.useState(false);
+
+  // Cek API siap setiap 500ms sampai ready
+  React.useEffect(()=>{
+    const check = setInterval(()=>{
+      if(window.gsIsReady && window.gsIsReady()){
+        setApiReady(true);
+        clearInterval(check);
+      }
+    }, 500);
+    // Timeout 30 detik
+    setTimeout(()=>clearInterval(check), 30000);
+    return ()=>clearInterval(check);
+  },[]);
 
   React.useEffect(()=>{
     window.addEventListener('gs-signed-in',  ()=>setSignedIn(true));
@@ -1145,11 +1159,12 @@ function GSheetPanel({transaksi, kamar, aset, kewajiban, onLoad, showToast}) {
   },[]);
 
   const handleLogin = async () => {
+    if(!apiReady){ setStatus("error"); setMsg("Google API masih loading, tunggu beberapa detik lalu coba lagi."); return; }
     setStatus("loading"); setMsg("Menghubungkan ke Google...");
     try {
       await window.gsSignIn();
       setSignedIn(true); setStatus("success"); setMsg("✓ Berhasil login ke Google");
-    } catch(e) { setStatus("error"); setMsg("Gagal login: "+e); }
+    } catch(e) { setStatus("error"); setMsg("Gagal login: "+String(e)); }
   };
 
   const handleSave = async () => {
@@ -1173,7 +1188,7 @@ function GSheetPanel({transaksi, kamar, aset, kewajiban, onLoad, showToast}) {
   };
 
   const handleLogout = () => {
-    window.gsSignOut();
+    try{ window.gsSignOut(); }catch(e){}
     setSignedIn(false); setStatus("idle"); setMsg("");
   };
 
@@ -1193,7 +1208,16 @@ function GSheetPanel({transaksi, kamar, aset, kewajiban, onLoad, showToast}) {
         </div>
       </div>
 
-      {/* Status */}
+      {/* Status API */}
+      <div style={{marginBottom:12,fontSize:12,display:"flex",alignItems:"center",gap:8}}>
+        <span style={{fontWeight:600,color:"var(--text-soft)"}}>Google API:</span>
+        {apiReady
+          ? <span style={{color:"var(--green)",fontWeight:700}}>🟢 Siap</span>
+          : <span style={{color:"var(--gold)",fontWeight:700}}>🟡 Loading... (tunggu beberapa detik)</span>
+        }
+      </div>
+
+      {/* Status pesan */}
       {msg && (
         <div style={{padding:"10px 16px",borderRadius:10,marginBottom:16,fontSize:13,fontWeight:500,
           background:status==="error"?"var(--rose-light)":status==="success"?"var(--green-light)":"var(--gold-light)",
@@ -1205,8 +1229,9 @@ function GSheetPanel({transaksi, kamar, aset, kewajiban, onLoad, showToast}) {
       {/* Tombol Aksi */}
       <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:16}}>
         {!signedIn ? (
-          <button className="btn btn-primary" onClick={handleLogin} disabled={status==="loading"}>
-            🔑 Login Google & Hubungkan Sheets
+          <button className="btn btn-primary" onClick={handleLogin} disabled={status==="loading"||!apiReady}
+            style={{opacity:apiReady?1:0.6}}>
+            {apiReady?"🔑 Login Google & Hubungkan Sheets":"⏳ Menunggu Google API..."}
           </button>
         ) : (
           <>
@@ -1232,10 +1257,11 @@ function GSheetPanel({transaksi, kamar, aset, kewajiban, onLoad, showToast}) {
       {/* Panduan */}
       <div style={{marginTop:16,background:"var(--gold-light)",borderRadius:10,padding:"12px 16px",fontSize:12,color:"var(--gold)",lineHeight:1.7}}>
         <strong>💡 Cara pakai:</strong><br/>
-        1. Klik <strong>Login Google</strong> → izinkan akses Google Sheets<br/>
-        2. Klik <strong>Simpan</strong> setelah input data baru<br/>
-        3. Di perangkat lain: Login → klik <strong>Muat</strong> untuk ambil data terbaru<br/>
-        4. Data otomatis tersimpan di tab: Transaksi, Kamar, Aset, Kewajiban
+        1. Tunggu status Google API: <strong>🟢 Siap</strong><br/>
+        2. Klik <strong>Login Google</strong> → izinkan akses Google Sheets<br/>
+        3. Klik <strong>Simpan</strong> setelah input data baru<br/>
+        4. Di perangkat lain: Login → klik <strong>Muat</strong> untuk ambil data terbaru<br/>
+        5. Data tersimpan di tab Sheets: Transaksi, Kamar, Aset, Kewajiban
       </div>
     </div>
   );
