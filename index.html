@@ -9,6 +9,123 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  <!-- Google API -->
+  <script src="https://apis.google.com/js/api.js" onload="gapiLoaded()"></script>
+  <script src="https://accounts.google.com/gsi/client" onload="gsiLoaded()"></script>
+  <script>
+    // ─── KONFIGURASI GOOGLE SHEETS ───────────────────────────────────────────
+    const GS_CLIENT_ID    = '895565907296-5n6shrl9cl45e1blap73bfduuqasl6sh.apps.googleusercontent.com';
+    const GS_API_KEY      = 'AIzaSyCnB90Cfay49siCRp1UpS5HAZ9h7HfuAII';
+    const GS_SPREADSHEET  = '1K3PQqNskDK1BnJYJr0dT8n-tEVWeo8lbIwx1IzpBeFc';
+    const GS_SCOPE        = 'https://www.googleapis.com/auth/spreadsheets';
+    const GS_DISCOVERY    = 'https://sheets.googleapis.com/$discovery/rest?version=v4';
+
+    let gsTokenClient = null;
+    let gsGapiReady   = false;
+    let gsGsiReady    = false;
+    let gsSignedIn    = false;
+
+    // Load GAPI client
+    function gapiLoaded() {
+      gapi.load('client', async () => {
+        await gapi.client.init({ apiKey: GS_API_KEY, discoveryDocs: [GS_DISCOVERY] });
+        gsGapiReady = true;
+      });
+    }
+
+    // Load GSI (Google Sign-In)
+    function gsiLoaded() {
+      gsTokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: GS_CLIENT_ID,
+        scope: GS_SCOPE,
+        callback: (resp) => {
+          if(resp.error) { console.error(resp); return; }
+          gsSignedIn = true;
+          window.dispatchEvent(new Event('gs-signed-in'));
+        },
+      });
+      gsGsiReady = true;
+    }
+
+    // Sign In
+    window.gsSignIn = () => new Promise((resolve, reject) => {
+      if(gsSignedIn){ resolve(); return; }
+      if(!gsGapiReady || !gsGsiReady){ reject('Google API belum siap'); return; }
+      window.addEventListener('gs-signed-in', () => resolve(), { once: true });
+      gsTokenClient.requestAccessToken({ prompt: 'consent' });
+    });
+
+    // Sign Out
+    window.gsSignOut = () => {
+      google.accounts.oauth2.revoke(gapi.client.getToken().access_token, ()=>{
+        gapi.client.setToken('');
+        gsSignedIn = false;
+        window.dispatchEvent(new Event('gs-signed-out'));
+      });
+    };
+
+    // Simpan semua data ke Google Sheets
+    window.gsSave = async (data) => {
+      await window.gsSignIn();
+      const sheets = [
+        { name:'Transaksi',   rows: data.transaksi,  headers:['id','tanggal','jenis','kategori','deskripsi','jumlah','kamar','rekening'] },
+        { name:'Kamar',       rows: data.kamar,      headers:['id','nomor','penghuni','harga','status','masuk','akhirSewa'] },
+        { name:'Aset',        rows: data.aset,       headers:['id','nama','nilai','penyusutan','jenis','keterangan','tanggalBeli','usiaPakai'] },
+        { name:'Kewajiban',   rows: data.kewajiban,  headers:['id','nama','jumlah','cicilan'] },
+      ];
+      // Bersihkan dan isi ulang setiap sheet
+      for(const s of sheets){
+        const values = [s.headers, ...s.rows.map(r => s.headers.map(h => {
+          const v = r[h];
+          return v === null || v === undefined ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+        }))];
+        // Clear dulu
+        await gapi.client.sheets.spreadsheets.values.clear({
+          spreadsheetId: GS_SPREADSHEET,
+          range: s.name,
+        }).catch(()=>{});
+        // Update
+        await gapi.client.sheets.spreadsheets.values.update({
+          spreadsheetId: GS_SPREADSHEET,
+          range: `${s.name}!A1`,
+          valueInputOption: 'RAW',
+          resource: { values },
+        });
+      }
+      return true;
+    };
+
+    // Muat semua data dari Google Sheets
+    window.gsLoad = async () => {
+      await window.gsSignIn();
+      const sheetNames = ['Transaksi','Kamar','Aset','Kewajiban'];
+      const result = {};
+      for(const name of sheetNames){
+        const resp = await gapi.client.sheets.spreadsheets.values.get({
+          spreadsheetId: GS_SPREADSHEET,
+          range: name,
+        }).catch(()=>({result:{values:[]}}));
+        const rows = resp.result.values || [];
+        if(rows.length < 2){ result[name.toLowerCase()] = []; continue; }
+        const headers = rows[0];
+        result[name.toLowerCase()] = rows.slice(1).map(row => {
+          const obj = {};
+          headers.forEach((h,i) => {
+            const v = row[i] || '';
+            // Konversi tipe data
+            if(['id','jumlah','harga','penyusutan','cicilan','nilai','usiaPakai'].includes(h))
+              obj[h] = v === '' ? 0 : Number(v);
+            else obj[h] = v;
+          });
+          return obj;
+        });
+      }
+      return result;
+    };
+
+    window.gsIsReady = () => gsGapiReady && gsGsiReady;
+    window.gsIsSignedIn = () => gsSignedIn;
+  </script>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     :root{
@@ -1015,6 +1132,115 @@ function LabaRugiTahunan({transaksi, aset, jenisLabel}) {
   );
 }
 
+// ─── GOOGLE SHEETS PANEL ─────────────────────────────────────────────────────
+function GSheetPanel({transaksi, kamar, aset, kewajiban, onLoad, showToast}) {
+  const [status,   setStatus]   = React.useState("idle"); // idle|loading|success|error
+  const [signedIn, setSignedIn] = React.useState(false);
+  const [lastSync, setLastSync] = React.useState(null);
+  const [msg,      setMsg]      = React.useState("");
+
+  React.useEffect(()=>{
+    window.addEventListener('gs-signed-in',  ()=>setSignedIn(true));
+    window.addEventListener('gs-signed-out', ()=>setSignedIn(false));
+  },[]);
+
+  const handleLogin = async () => {
+    setStatus("loading"); setMsg("Menghubungkan ke Google...");
+    try {
+      await window.gsSignIn();
+      setSignedIn(true); setStatus("success"); setMsg("✓ Berhasil login ke Google");
+    } catch(e) { setStatus("error"); setMsg("Gagal login: "+e); }
+  };
+
+  const handleSave = async () => {
+    setStatus("loading"); setMsg("Menyimpan ke Google Sheets...");
+    try {
+      await window.gsSave({transaksi,kamar,aset,kewajiban});
+      setLastSync(new Date().toLocaleString("id-ID"));
+      setStatus("success"); setMsg("✓ Data berhasil disimpan ke Google Sheets!");
+      showToast("✓ Tersimpan ke Google Sheets!");
+    } catch(e) { setStatus("error"); setMsg("Gagal simpan: "+String(e)); }
+  };
+
+  const handleLoad = async () => {
+    setStatus("loading"); setMsg("Memuat data dari Google Sheets...");
+    try {
+      const data = await window.gsLoad();
+      onLoad(data);
+      setLastSync(new Date().toLocaleString("id-ID"));
+      setStatus("success"); setMsg("✓ Data berhasil dimuat dari Google Sheets!");
+    } catch(e) { setStatus("error"); setMsg("Gagal muat: "+String(e)); }
+  };
+
+  const handleLogout = () => {
+    window.gsSignOut();
+    setSignedIn(false); setStatus("idle"); setMsg("");
+  };
+
+  return (
+    <div>
+      {/* Info Google Sheets */}
+      <div style={{background:"rgba(21,101,192,0.06)",borderRadius:12,padding:"16px 20px",marginBottom:20,border:"1px solid rgba(21,101,192,0.15)"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+          <span style={{fontSize:22}}>📊</span>
+          <div>
+            <div style={{fontWeight:700,color:"#1565C0",fontSize:14}}>Google Sheets — Database Keuangan Kos Almarwa</div>
+            <div style={{fontSize:12,color:"var(--text-soft)"}}>Data disimpan di spreadsheet milik almarwagriyasedjiwa@gmail.com</div>
+          </div>
+        </div>
+        <div style={{fontSize:12,color:"var(--text-soft)",background:"white",borderRadius:8,padding:"8px 12px",fontFamily:"monospace",wordBreak:"break-all"}}>
+          ID: 1K3PQqNskDK1BnJYJr0dT8n-tEVWeo8lbIwx1IzpBeFc
+        </div>
+      </div>
+
+      {/* Status */}
+      {msg && (
+        <div style={{padding:"10px 16px",borderRadius:10,marginBottom:16,fontSize:13,fontWeight:500,
+          background:status==="error"?"var(--rose-light)":status==="success"?"var(--green-light)":"var(--gold-light)",
+          color:status==="error"?"var(--rose)":status==="success"?"var(--green)":"var(--gold)"}}>
+          {status==="loading"?"⏳ ":""}{msg}
+        </div>
+      )}
+
+      {/* Tombol Aksi */}
+      <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:16}}>
+        {!signedIn ? (
+          <button className="btn btn-primary" onClick={handleLogin} disabled={status==="loading"}>
+            🔑 Login Google & Hubungkan Sheets
+          </button>
+        ) : (
+          <>
+            <button className="btn btn-green" onClick={handleSave} disabled={status==="loading"}>
+              ☁️ Simpan ke Google Sheets
+            </button>
+            <button className="btn btn-secondary" onClick={handleLoad} disabled={status==="loading"}>
+              📥 Muat dari Google Sheets
+            </button>
+            <button className="btn btn-danger btn-sm" onClick={handleLogout}>
+              Logout Google
+            </button>
+          </>
+        )}
+      </div>
+
+      {/* Status login & last sync */}
+      <div style={{display:"flex",gap:16,fontSize:12,color:"var(--text-soft)",flexWrap:"wrap"}}>
+        <span>Status: <strong style={{color:signedIn?"var(--green)":"var(--rose)"}}>{signedIn?"🟢 Terhubung":"🔴 Belum login"}</strong></span>
+        {lastSync && <span>Terakhir sync: <strong>{lastSync}</strong></span>}
+      </div>
+
+      {/* Panduan */}
+      <div style={{marginTop:16,background:"var(--gold-light)",borderRadius:10,padding:"12px 16px",fontSize:12,color:"var(--gold)",lineHeight:1.7}}>
+        <strong>💡 Cara pakai:</strong><br/>
+        1. Klik <strong>Login Google</strong> → izinkan akses Google Sheets<br/>
+        2. Klik <strong>Simpan</strong> setelah input data baru<br/>
+        3. Di perangkat lain: Login → klik <strong>Muat</strong> untuk ambil data terbaru<br/>
+        4. Data otomatis tersimpan di tab: Transaksi, Kamar, Aset, Kewajiban
+      </div>
+    </div>
+  );
+}
+
 // ─── APP UTAMA ───────────────────────────────────────────────────────────────
 function App() {
   const now = new Date();
@@ -1286,7 +1512,7 @@ function App() {
           </div>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <div className="sync-badge" onClick={exportAllData}>💾 Backup Data</div>
+          <div className="sync-badge" onClick={()=>setTab("backup")}>☁️ Google Sheets</div>
         </div>
       </header>
 
@@ -1803,20 +2029,34 @@ function App() {
         {/* BACKUP / RESTORE */}
         {tab==="backup" && (
           <div className="card">
-            <div className="card-title">💾 Backup & Restore Data</div>
-            <p style={{color:"var(--text-soft)",marginBottom:24,lineHeight:1.7}}>
-              Data tersimpan otomatis di browser (localStorage). Gunakan fitur Backup untuk menyimpan file cadangan,
-              dan Restore untuk memulihkan dari file backup sebelumnya.
+            <div className="card-title">☁️ Sinkronisasi Google Sheets</div>
+
+            {/* STATUS KONEKSI */}
+            <GSheetPanel
+              transaksi={transaksi} kamar={kamar} aset={aset} kewajiban={kewajiban}
+              onLoad={(data)=>{
+                if(data.transaksi?.length) setTransaksi(data.transaksi);
+                if(data.kamar?.length) setKamar(data.kamar);
+                if(data.aset?.length) setAset(data.aset);
+                if(data.kewajiban?.length) setKewajiban(data.kewajiban);
+                showToast("✓ Data berhasil dimuat dari Google Sheets!");
+              }}
+              showToast={showToast}
+            />
+
+            <hr className="divider"/>
+            <div className="card-title" style={{fontSize:16,marginBottom:12}}>💾 Backup Lokal</div>
+            <p style={{color:"var(--text-soft)",marginBottom:16,lineHeight:1.7,fontSize:13}}>
+              Data juga tersimpan otomatis di browser (localStorage) sebagai cadangan.
             </p>
             <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:24}}>
-              <button className="btn btn-green" onClick={exportAllData}>📥 Download Backup (.json)</button>
+              <button className="btn btn-secondary" onClick={exportAllData}>📥 Download Backup (.json)</button>
               <button className="btn btn-secondary" onClick={()=>document.getElementById("importFile").click()}>📂 Restore dari File</button>
               <button className="btn btn-gold" onClick={exportCSV}>📊 Export CSV Transaksi</button>
               <input id="importFile" type="file" accept=".json" style={{display:"none"}} onChange={importData}/>
             </div>
-            <hr className="divider"/>
             <div style={{background:"var(--rose-pale)",borderRadius:12,padding:"16px 20px",marginBottom:16}}>
-              <strong style={{color:"var(--burgundy)"}}>📋 Ringkasan Data Tersimpan:</strong>
+              <strong style={{color:"var(--burgundy)"}}>📋 Ringkasan Data:</strong>
               <div style={{marginTop:10,display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:8}}>
                 {[["Total Transaksi",transaksi.length+" record"],["Jumlah Kamar",kamar.length+" kamar"],["Data Aset",aset.length+" item"],["Data Kewajiban",kewajiban.length+" item"]].map(([l,v])=>(
                   <div key={l} style={{display:"flex",justifyContent:"space-between",fontSize:13}}>
@@ -1824,10 +2064,6 @@ function App() {
                   </div>
                 ))}
               </div>
-            </div>
-            <div style={{background:"var(--gold-light)",borderRadius:12,padding:"14px 18px",fontSize:13,color:"var(--gold)"}}>
-              💡 <strong>Tips:</strong> Data tersimpan otomatis di browser ini. Jika buka di browser/perangkat lain, 
-              restore dari file backup. Backup rutin setiap minggu dianjurkan.
             </div>
           </div>
         )}
