@@ -77,11 +77,16 @@
           const v = r[h];
           return v === null || v === undefined ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
         }))];
-        // Clear dulu
-        await gapi.client.sheets.spreadsheets.values.clear({
-          spreadsheetId: GS_SPREADSHEET,
-          range: s.name,
-        }).catch(()=>{});
+        // Clear dulu. Catatan: object dari gapi.client tidak selalu punya .catch(),
+        // jadi gunakan try/catch biasa agar tidak muncul error: .catch is not a function.
+        try {
+          await gapi.client.sheets.spreadsheets.values.clear({
+            spreadsheetId: GS_SPREADSHEET,
+            range: `${s.name}!A:Z`,
+          });
+        } catch (err) {
+          console.warn(`Gagal clear sheet ${s.name}, lanjut update:`, err);
+        }
         // Update
         await gapi.client.sheets.spreadsheets.values.update({
           spreadsheetId: GS_SPREADSHEET,
@@ -99,10 +104,16 @@
       const sheetNames = ['Transaksi','Kamar','Aset','Kewajiban'];
       const result = {};
       for(const name of sheetNames){
-        const resp = await gapi.client.sheets.spreadsheets.values.get({
-          spreadsheetId: GS_SPREADSHEET,
-          range: name,
-        }).catch(()=>({result:{values:[]}}));
+        let resp;
+        try {
+          resp = await gapi.client.sheets.spreadsheets.values.get({
+            spreadsheetId: GS_SPREADSHEET,
+            range: name,
+          });
+        } catch (err) {
+          console.warn(`Gagal membaca sheet ${name}:`, err);
+          resp = { result: { values: [] } };
+        }
         const rows = resp.result.values || [];
         if(rows.length < 2){ result[name.toLowerCase()] = []; continue; }
         const headers = rows[0];
