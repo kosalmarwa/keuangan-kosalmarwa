@@ -497,19 +497,43 @@ function SelectorRekening({value, onChange}) {
 }
 
 // ─── LAPORAN LABA RUGI BULANAN ──────────────────────────────────────────────
-function LabaRugiReport({transaksi, aset}) {
+function LabaRugiReport({transaksi, aset, bulan, tahun}) {
   const masuk  = transaksi.filter(t=>t.jenis==="Pemasukan");
   const keluar = transaksi.filter(t=>t.jenis==="Pengeluaran");
   const grp = (arr,key) => arr.reduce((a,t)=>{a[t[key]]=(a[t[key]]||0)+t.jumlah;return a},{});
   const pGrp = grp(masuk,"kategori"), kGrp = grp(keluar,"kategori");
   const totM  = masuk.reduce((s,t)=>s+t.jumlah,0);
   const totKTunai = keluar.reduce((s,t)=>s+t.jumlah,0);
-  // Penyusutan aset tetap = beban non-kas per bulan
-  const asetTetap = (aset||[]).filter(a=>a.jenis==="tetap"||!a.jenis);
-  const totPenyusutan = asetTetap.reduce((s,a)=>s+(a.penyusutan||0),0);
+
+  // Filter aset tetap: hanya yang sudah dibeli s/d bulan laporan
+  const bln0 = (bulan||1) - 1; // 0-based
+  const asetTetap = (aset||[]).filter(a=>{
+    if(a.jenis==="lancar") return false;
+    if(!a.tanggalBeli) return true;
+    const beli = new Date(a.tanggalBeli);
+    if(beli.getFullYear() > tahun) return false;
+    if(beli.getFullYear() === tahun && beli.getMonth() > bln0) return false;
+    return true;
+  });
+
+  // Penyusutan per aset: hanya berlaku di bulan laporan (bukan akumulasi)
+  const penyAset = (a) => {
+    if(!a.penyusutan) return 0;
+    if(!a.tanggalBeli) return a.penyusutan;
+    const beli = new Date(a.tanggalBeli);
+    const beliThn = beli.getFullYear(), beliBln = beli.getMonth();
+    if(tahun < beliThn || (tahun===beliThn && bln0 < beliBln)) return 0;
+    if(a.usiaPakai > 0) {
+      const bulanSejakBeli = (tahun - beliThn)*12 + (bln0 - beliBln);
+      if(bulanSejakBeli >= a.usiaPakai) return 0;
+    }
+    return a.penyusutan;
+  };
+
+  const totPenyusutan = asetTetap.reduce((s,a)=>s+penyAset(a),0);
   const totK  = totKTunai + totPenyusutan;
   const laba  = totM - totK;
-  const totBebanLabel = totK; // untuk hitung persentase
+  const totBebanLabel = totK;
   return (
     <div>
       <div className="report-row header">📈 PENDAPATAN / PEMASUKAN</div>
@@ -543,15 +567,15 @@ function LabaRugiReport({transaksi, aset}) {
           <div style={{padding:"6px 16px 2px",fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"1px",color:"var(--gold)",marginTop:4}}>
             Beban Non-Kas
           </div>
-          {asetTetap.filter(a=>a.penyusutan>0).map(a=>(
+          {asetTetap.filter(a=>penyAset(a)>0).map(a=>(
             <div className="report-row" key={a.id}>
               <span style={{color:"var(--text-soft)"}}>
                 Penyusutan — {a.nama}
                 <span style={{fontSize:11,marginLeft:6,padding:"1px 7px",borderRadius:8,background:"var(--gold-light)",color:"var(--gold)",fontWeight:600}}>non-kas</span>
               </span>
               <div style={{textAlign:"right"}}>
-                <div className="amount-neg">{fmt(a.penyusutan)}</div>
-                <div style={{fontSize:11,color:"var(--text-soft)"}}>{totBebanLabel>0?Math.round(a.penyusutan/totBebanLabel*100):0}%</div>
+                <div className="amount-neg">{fmt(penyAset(a))}</div>
+                <div style={{fontSize:11,color:"var(--text-soft)"}}>{totBebanLabel>0?Math.round(penyAset(a)/totBebanLabel*100):0}%</div>
               </div>
             </div>
           ))}
@@ -2123,7 +2147,9 @@ function App() {
             <hr className="divider"/>
             <LabaRugiReport
               transaksi={jenisLR==="almarwa" ? filtered.filter(t=>(t.rekening||"Al Marwa")==="Al Marwa") : filtered}
-              aset={aset}/>
+              aset={aset}
+              bulan={filter.bulan}
+              tahun={filter.tahun}/>
           </div>
         </>)}
 
