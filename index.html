@@ -1565,28 +1565,54 @@ function App() {
   },[]);
 
   const runStartupCheck = async () => {
+    setSyncStatus("saving"); setSyncMsg("Memuat data dari Google Sheets...");
     try {
       const sheetsData = await window.gsLoad();
-      const tsSheets = sheetsData._savedAt || 0;
-      const tsLocal  = saved?._savedAt || 0;
-      if(tsSheets === 0 && tsLocal === 0) return; // keduanya kosong
-      if(tsSheets === tsLocal) return;             // sama, tidak perlu dialog
-      // Ada perbedaan → tampilkan dialog
-      setStartupData(sheetsData);
-      setStartupModal("diff");
-    } catch(e) { console.warn("Startup check gagal:", e); }
+      const sheetsKosong = !sheetsData.transaksi?.length &&
+                           !sheetsData.kamar?.length &&
+                           !sheetsData.aset?.length;
+      const lokalAdaData = (saved?.transaksi?.length || 0) > 0 ||
+                           (saved?.kamar?.length || 0) > 0;
+
+      if(sheetsKosong && lokalAdaData) {
+        // Sheets kosong tapi lokal ada data → tanya upload
+        setStartupData(sheetsData);
+        setStartupModal("uploadLokal");
+        setSyncStatus("idle"); setSyncMsg("");
+      } else {
+        // Sheets ada data → langsung pakai Sheets, tidak tanya
+        applySheets(sheetsData);
+      }
+    } catch(e) {
+      console.warn("Startup check gagal:", e);
+      setSyncStatus("error");
+      setSyncMsg("Gagal memuat dari Sheets: "+String(e));
+    }
   };
 
+  // Terapkan data dari Sheets — tidak ada pilihan lokal
+  const applySheets = (sheetsData) => {
+    if(sheetsData.transaksi)  setTransaksi(sheetsData.transaksi);
+    if(sheetsData.kamar)      setKamar(sheetsData.kamar);
+    if(sheetsData.aset)       setAset(sheetsData.aset);
+    if(sheetsData.kewajiban)  setKewajiban(sheetsData.kewajiban);
+    setLoadedAt(sheetsData._savedAt || Date.now());
+    setSyncStatus("saved"); setSyncTime(new Date());
+    showToast("✓ Data dimuat dari Google Sheets");
+  };
+
+  // Hanya dipanggil saat user pilih upload lokal ke Sheets (Sheets kosong)
   const applyStartupData = (source) => {
-    if(source === "sheets" && startupData) {
-      if(startupData.transaksi?.length) setTransaksi(startupData.transaksi);
-      if(startupData.kamar?.length)     setKamar(startupData.kamar);
-      if(startupData.aset?.length)      setAset(startupData.aset);
-      if(startupData.kewajiban?.length) setKewajiban(startupData.kewajiban);
-      setLoadedAt(startupData._savedAt || 0);
-      showToast("✓ Data dari Google Sheets dimuat!");
+    if(source === "upload" && saved) {
+      // Upload data lokal ke Sheets
+      setLoadedAt(saved._savedAt || 0);
+      showToast("✓ Data lokal akan diupload ke Google Sheets...");
+      // Trigger auto-save segera
+      if(autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+      autoSaveTimer.current = setTimeout(()=>doAutoSave(), 500);
     } else {
-      showToast("✓ Menggunakan data lokal browser");
+      // Mulai dengan data kosong
+      showToast("✓ Memulai dengan data kosong");
     }
     setStartupModal(null);
     setStartupData(null);
@@ -1928,9 +1954,33 @@ function App() {
         ))}
       </nav>
 
-      <main className="main">
+      {/* Banner peringatan belum login */}
+      {!gsSignedIn && (
+        <div style={{background:"#FFF3E0",borderBottom:"2px solid #FFCC80",padding:"8px 24px",
+          display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:"#E65100"}}>
+            <span style={{fontSize:18}}>⚠️</span>
+            <span>
+              <strong>Belum terhubung Google Sheets</strong> — Data yang tampil adalah data lokal browser saja.
+              Mungkin bukan data terbaru.
+            </span>
+          </div>
+          <button className="btn btn-sm" style={{background:"#E65100",color:"white",
+            whiteSpace:"nowrap",flexShrink:0}}
+            onClick={async()=>{
+              try {
+                await window.gsSignIn();
+                setGsSignedIn(true);
+                showToast("✓ Login berhasil! Memuat data...");
+                runStartupCheck();
+              } catch(e){ showToast("Gagal login: "+String(e),"error"); }
+            }}>
+            🔑 Login Google Sekarang
+          </button>
+        </div>
+      )}
 
-        {/* DASHBOARD */}
+      <main className="main">
         {tab==="dashboard" && (<>
           {/* Notifikasi sewa jatuh tempo di dashboard */}
           {(()=>{
@@ -2844,54 +2894,39 @@ function App() {
         </div>
       )}
 
-      {/* ── MODAL STARTUP: PERBEDAAN DATA ───────────────────────────────── */}
-      {startupModal==="diff" && startupData && (()=>{
-        const tsLocal  = saved?._savedAt || 0;
-        const tsSheets = startupData._savedAt || 0;
-        const fmtTs = (ts) => ts ? new Date(ts).toLocaleString("id-ID",{
-          day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : "Tidak diketahui";
-        const localLebihBaru = tsLocal > tsSheets;
-        return (
-          <div className="modal-overlay" style={{zIndex:400}}>
-            <div className="modal" style={{maxWidth:480}}>
-              <div className="modal-title">⚠️ Perbedaan Data Ditemukan</div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:20}}>
-                <div style={{background:"var(--rose-pale)",borderRadius:10,padding:"14px 16px",
-                  border:localLebihBaru?"2px solid var(--green)":"1px solid var(--border)"}}>
-                  <div style={{fontWeight:700,fontSize:13,color:"var(--burgundy)",marginBottom:6}}>
-                    📱 Data Lokal Browser
-                    {localLebihBaru && <span style={{fontSize:10,marginLeft:6,background:"var(--green)",color:"white",padding:"1px 6px",borderRadius:8}}>Lebih Baru</span>}
-                  </div>
-                  <div style={{fontSize:12,color:"var(--text-soft)",marginBottom:4}}>Update: {fmtTs(tsLocal)}</div>
-                  <div style={{fontSize:12,color:"var(--text-soft)"}}>{(saved?.transaksi||[]).length} transaksi</div>
-                </div>
-                <div style={{background:"rgba(21,101,192,0.06)",borderRadius:10,padding:"14px 16px",
-                  border:!localLebihBaru?"2px solid #1565C0":"1px solid var(--border)"}}>
-                  <div style={{fontWeight:700,fontSize:13,color:"#1565C0",marginBottom:6}}>
-                    ☁️ Google Sheets
-                    {!localLebihBaru && <span style={{fontSize:10,marginLeft:6,background:"#1565C0",color:"white",padding:"1px 6px",borderRadius:8}}>Lebih Baru</span>}
-                  </div>
-                  <div style={{fontSize:12,color:"var(--text-soft)",marginBottom:4}}>Update: {fmtTs(tsSheets)}</div>
-                  <div style={{fontSize:12,color:"var(--text-soft)"}}>{(startupData.transaksi||[]).length} transaksi</div>
-                </div>
+      {/* ── MODAL STARTUP: SHEETS KOSONG, LOKAL ADA DATA ───────────────── */}
+      {startupModal==="uploadLokal" && (
+        <div className="modal-overlay" style={{zIndex:400}}>
+          <div className="modal" style={{maxWidth:460}}>
+            <div style={{textAlign:"center",marginBottom:20}}>
+              <div style={{fontSize:48,marginBottom:8}}>📤</div>
+              <div className="modal-title" style={{justifyContent:"center",marginBottom:8}}>
+                Google Sheets Masih Kosong
               </div>
-              <p style={{fontSize:12,color:"var(--text-soft)",marginBottom:16,lineHeight:1.6}}>
-                Pilih data mana yang ingin digunakan. Data yang tidak dipilih tidak akan hilang dari sumbernya.
+              <p style={{color:"var(--text-soft)",fontSize:13,lineHeight:1.7}}>
+                Google Sheets belum memiliki data, tetapi ditemukan
+                <strong> {(saved?.transaksi||[]).length} transaksi</strong> di browser ini.<br/><br/>
+                Apakah ingin mengupload data lokal sebagai <strong>data awal</strong> ke Google Sheets?
               </p>
-              <div style={{display:"flex",gap:10}}>
-                <button className="btn btn-secondary" style={{flex:1,justifyContent:"center"}}
-                  onClick={()=>applyStartupData("local")}>
-                  📱 Pakai Data Lokal
-                </button>
-                <button className="btn btn-primary" style={{flex:1,justifyContent:"center"}}
-                  onClick={()=>applyStartupData("sheets")}>
-                  ☁️ Pakai Data Sheets
-                </button>
-              </div>
+            </div>
+            <div style={{background:"var(--gold-light)",borderRadius:10,padding:"10px 14px",
+              fontSize:12,color:"var(--gold)",marginBottom:16,lineHeight:1.6}}>
+              💡 Pilih <strong>Upload</strong> jika ini adalah perangkat utama Anda dan data lokal sudah benar.<br/>
+              Pilih <strong>Mulai Kosong</strong> jika ingin memulai dari awal.
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <button className="btn btn-secondary" style={{flex:1,justifyContent:"center"}}
+                onClick={()=>applyStartupData("kosong")}>
+                🗑️ Mulai Kosong
+              </button>
+              <button className="btn btn-primary" style={{flex:1,justifyContent:"center"}}
+                onClick={()=>applyStartupData("upload")}>
+                📤 Upload Data Lokal ke Sheets
+              </button>
             </div>
           </div>
-        );
-      })()}
+        </div>
+      )}
 
       {/* ── MODAL SYNC CONFLICT: WAJIB MUAT TERBARU ────────────────────── */}
       {modal==="syncConflict" && (
