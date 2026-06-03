@@ -594,20 +594,50 @@ function LabaRugiReport({transaksi, aset}) {
 // ─── NERACA ─────────────────────────────────────────────────────────────────
 function NeracaReport({aset, kewajiban, modalAwal, akumLabaDitahan, labaTahunIni, tahun, bulan, totAsetTetapBruto, totKwj}) {
   // SISI AKTIVA
-  const asetLancarDetail = aset.filter(a=>a.jenis==="lancar");
-  const asetTetap        = aset.filter(a=>a.jenis==="tetap"||!a.jenis);
+  const nBln0 = (bulan||12) - 1; // bulan neraca 0-based
+
+  // Filter aset tetap: hanya yang sudah dibeli s/d bulan neraca
+  const asetTetap = aset.filter(a=>{
+    if(a.jenis==="lancar") return false;
+    if(!a.tanggalBeli) return true;
+    const beli = new Date(a.tanggalBeli);
+    if(beli.getFullYear() > tahun) return false;
+    if(beli.getFullYear() === tahun && beli.getMonth() > nBln0) return false;
+    return true;
+  });
+
+  // Hitung akumulasi penyusutan 1 aset s/d bulan neraca (bukan flat /bln)
+  const hitungAkumPeny = (a) => {
+    if(!a.penyusutan) return 0;
+    if(!a.tanggalBeli) return a.penyusutan * (nBln0 + 1);
+    const beli = new Date(a.tanggalBeli);
+    const beliThn = beli.getFullYear(), beliBln = beli.getMonth();
+    let totalBulan = 0;
+    for(let thn2=beliThn; thn2<=tahun; thn2++) {
+      const blnMulai = thn2===beliThn ? beliBln : 0;
+      const blnAkhir = thn2===tahun   ? nBln0   : 11;
+      for(let b=blnMulai; b<=blnAkhir; b++) {
+        if(a.usiaPakai>0) {
+          const sdBeli = (thn2-beliThn)*12+(b-beliBln);
+          if(sdBeli >= a.usiaPakai) continue;
+        }
+        totalBulan++;
+      }
+    }
+    return a.penyusutan * totalBulan;
+  };
+
   const totTetapBruto    = asetTetap.reduce((s,a)=>s+a.nilai,0);
-  const totPenyusutan    = asetTetap.reduce((s,a)=>s+(a.penyusutan||0),0);
+  const totPenyusutan    = asetTetap.reduce((s,a)=>s+hitungAkumPeny(a),0);
   const totTetapBersih   = totTetapBruto - totPenyusutan;
-  // PPh Pasal 31E = 11% × laba (hanya jika laba > 0)
+  // PPh Pasal 31E = 11% x laba (hanya jika laba > 0)
   const pph              = labaTahunIni > 0 ? Math.round(labaTahunIni * 0.11) : 0;
   const labaSetelahPajak = labaTahunIni - pph;
   // SISI PASIVA
   const totalEkuitas     = modalAwal + akumLabaDitahan + labaSetelahPajak;
-  const totPasivaSebelumPPh = totKwj + totalEkuitas;
-  const totKwjTotal      = totKwj + pph; // kewajiban + utang PPh
+  const totKwjTotal      = totKwj + pph;
   const totPasiva        = totKwjTotal + totalEkuitas;
-  // Aset Lancar = Pasiva - Aset Tetap Bersih → neraca selalu seimbang
+  // Aset Lancar = Pasiva - Aset Tetap Bersih (selalu seimbang)
   const totLancarNeraca  = totPasiva - totTetapBersih;
   const totAset          = totLancarNeraca + totTetapBersih;
 
@@ -652,11 +682,20 @@ function NeracaReport({aset, kewajiban, modalAwal, akumLabaDitahan, labaTahunIni
           <span>🏛️ ASET TETAP</span>
           <span style={{fontSize:11,padding:"2px 8px",borderRadius:10,background:"var(--white)",color:"var(--gold)",fontWeight:700}}>Jangka Panjang</span>
         </div>
-        {asetTetap.length===0 && <div style={{padding:"10px 16px",color:"var(--text-soft)",fontSize:13,fontStyle:"italic"}}>Belum ada aset tetap.</div>}
-        {asetTetap.map(a=>(
-          <R key={a.id} label={a.nama} val={a.nilai}
-             sub={"Penyusutan: "+fmt(a.penyusutan||0)+"/bln"+(a.tanggalBeli?" · Beli: "+a.tanggalBeli:"")+(a.keterangan?" · "+a.keterangan:"")} indent/>
-        ))}
+        {asetTetap.length===0 && <div style={{padding:"10px 16px",color:"var(--text-soft)",fontSize:13,fontStyle:"italic"}}>Belum ada aset tetap yang dibeli s/d periode ini.</div>}
+        {asetTetap.map(a=>{
+          const akumPeny = hitungAkumPeny(a);
+          const nilBersih = a.nilai - akumPeny;
+          return (
+            <R key={a.id} label={a.nama} val={a.nilai}
+               sub={[
+                 a.tanggalBeli?"Beli: "+a.tanggalBeli:"",
+                 a.penyusutan>0?"Peny/bln: "+fmt(a.penyusutan):"",
+                 akumPeny>0?"Akum. peny: "+fmt(akumPeny):"",
+                 "Nilai bersih: "+fmt(nilBersih)
+               ].filter(Boolean).join(" · ")} indent/>
+          );
+        })}
         <div style={{...rowStyle,borderTop:"1px dashed var(--border)",color:"var(--text-soft)",fontSize:13}}>
           <span>Akumulasi Penyusutan</span>
           <span style={{color:"var(--rose)",fontWeight:600}}>({fmt(totPenyusutan)})</span>
@@ -1500,13 +1539,22 @@ function App() {
   const kamarTerisi = kamarAktifBulan.length;
 
   // ── Kalkulasi Neraca ──────────────────────────────────────────────────────
-  const asetTetapList     = aset.filter(a=>a.jenis==="tetap"||!a.jenis);
+  const nTahun = filterNeraca.tahun;
+  const nBulan = filterNeraca.bulan; // 1-12
+  const nBln0  = nBulan - 1;        // 0-based
+
+  // Aset tetap yang sudah dibeli s/d bulan neraca
+  const asetTetapList = aset.filter(a=>{
+    if(a.jenis==="lancar") return false;
+    if(!a.tanggalBeli) return true;
+    const beli = new Date(a.tanggalBeli);
+    if(beli.getFullYear() > nTahun) return false;
+    if(beli.getFullYear() === nTahun && beli.getMonth() > nBln0) return false;
+    return true;
+  });
   const totAsetTetapBruto = asetTetapList.reduce((s,a)=>s+a.nilai,0);
   const totKwj            = kewajiban.reduce((s,k)=>s+k.jumlah,0);
   const modalAwal         = totAsetTetapBruto - totKwj;
-
-  const nTahun = filterNeraca.tahun;
-  const nBulan = filterNeraca.bulan; // 1-12
 
   // Helper: penyusutan 1 aset untuk bulan bln (0-11) di tahun thn
   const penyAsetBulan = (a, thn, bln) => {
