@@ -11,11 +11,12 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <!-- Google API dimuat setelah fungsi callback didefinisikan -->
   <script>
-    // ─── KONFIGURASI GOOGLE SHEETS ───────────────────────────────────────────
+    // ─── KONFIGURASI GOOGLE SHEETS & DRIVE ──────────────────────────────────
     const GS_CLIENT_ID    = '895565907296-5n6shrl9cl45e1blap73bfduuqasl6sh.apps.googleusercontent.com';
     const GS_API_KEY      = 'AIzaSyCnB90Cfay49siCRp1UpS5HAZ9h7HfuAII';
     const GS_SPREADSHEET  = '1K3PQqNskDK1BnJYJr0dT8n-tEVWeo8lbIwx1IzpBeFc';
-    const GS_SCOPE        = 'https://www.googleapis.com/auth/spreadsheets';
+    const GD_FOLDER_ID    = '1uBM-eiXCVwG40DySZX-qrdUl-Umqd2oy'; // Folder Bukti Kos Almarwa
+    const GS_SCOPE        = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file';
     const GS_DISCOVERY    = 'https://sheets.googleapis.com/$discovery/rest?version=v4';
 
     let gsTokenClient = null;
@@ -66,7 +67,7 @@
     window.gsSave = async (data) => {
       await window.gsSignIn();
       const sheets = [
-        { name:'Transaksi',   rows: data.transaksi,  headers:['id','tanggal','jenis','kategori','deskripsi','jumlah','kamar','rekening'] },
+        { name:'Transaksi',   rows: data.transaksi,  headers:['id','tanggal','jenis','kategori','deskripsi','jumlah','kamar','rekening','bukti','buktiNama','buktiThumb','buktiDrive','buktiId'] },
         { name:'Kamar',       rows: data.kamar,      headers:['id','nomor','penghuni','harga','status','masuk','akhirSewa'] },
         { name:'Aset',        rows: data.aset,       headers:['id','nama','nilai','penyusutan','jenis','keterangan','tanggalBeli','usiaPakai'] },
         { name:'Kewajiban',   rows: data.kewajiban,  headers:['id','nama','jumlah','cicilan'] },
@@ -132,8 +133,15 @@
           const obj = {};
           headers.forEach((h,i) => {
             const v = row[i] || '';
+            // Angka
             if(['id','jumlah','harga','penyusutan','cicilan','nilai','usiaPakai'].includes(h))
               obj[h] = v === '' ? 0 : Number(v);
+            // Boolean
+            else if(h === 'buktiDrive')
+              obj[h] = v === 'true';
+            // String kosong → null untuk kolom bukti
+            else if(['bukti','buktiNama','buktiThumb','buktiId'].includes(h))
+              obj[h] = v === '' ? null : v;
             else obj[h] = v;
           });
           return obj;
@@ -152,6 +160,61 @@
 
     window.gsIsReady = () => gsGapiReady && gsGsiReady;
     window.gsIsSignedIn = () => gsSignedIn;
+
+    // Upload file bukti ke Google Drive — kembalikan URL yang bisa dibuka
+    window.gsDriveUpload = async (file) => {
+      await window.gsSignIn();
+      const token = gapi.client.getToken();
+      if(!token) throw new Error('Tidak ada token akses');
+
+      // Buat metadata file
+      const metadata = {
+        name: file.name,
+        parents: [GD_FOLDER_ID],
+        mimeType: file.type,
+      };
+
+      // Buat form multipart
+      const form = new FormData();
+      form.append('metadata', new Blob([JSON.stringify(metadata)], {type:'application/json'}));
+      form.append('file', file);
+
+      // Upload ke Drive API
+      const resp = await fetch(
+        'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink,webContentLink',
+        {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + token.access_token },
+          body: form,
+        }
+      );
+      if(!resp.ok) {
+        const err = await resp.json();
+        throw new Error('Upload Drive gagal: ' + (err.error?.message || resp.status));
+      }
+      const result = await resp.json();
+
+      // Set permission agar bisa dilihat siapapun dengan link
+      await fetch(
+        `https://www.googleapis.com/drive/v3/files/${result.id}/permissions`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer ' + token.access_token,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ role:'reader', type:'anyone' }),
+        }
+      );
+
+      // Kembalikan URL preview
+      return {
+        fileId:   result.id,
+        nama:     result.name,
+        viewUrl:  `https://drive.google.com/file/d/${result.id}/view`,
+        thumbUrl: `https://drive.google.com/thumbnail?id=${result.id}&sz=w200`,
+      };
+    };
   </script>
   <!-- Google API: diletakkan di sini agar gapiLoaded() dan gsiLoaded() sudah tersedia di window -->
   <script src="https://apis.google.com/js/api.js" onload="window.gapiLoaded()"></script>
@@ -384,20 +447,35 @@ function TransaksiTable({data, onDelete, onEdit, short}) {
               {!short && <td style={{textAlign:"center"}}>
                 {t.bukti ? (
                   <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
-                    {t.bukti.startsWith("data:image") ? (
+                    {t.buktiDrive ? (
+                      // File dari Google Drive — pakai thumbnail Drive
+                      <div style={{position:"relative",cursor:"pointer"}}
+                        onClick={()=>setViewBukti({src:t.bukti,nama:t.buktiNama,isDrive:true,thumbUrl:t.buktiThumb})}>
+                        {t.buktiThumb
+                          ? <img src={t.buktiThumb} alt="bukti"
+                              style={{width:44,height:44,objectFit:"cover",borderRadius:6,
+                                border:"2px solid #1565C0"}}
+                              onError={e=>{ e.target.style.display='none'; e.target.nextSibling.style.display='flex'; }}/>
+                          : null}
+                        <div style={{width:44,height:44,borderRadius:6,border:"2px solid #1565C0",
+                          background:"rgba(21,101,192,0.1)",display:t.buktiThumb?"none":"flex",
+                          alignItems:"center",justifyContent:"center",fontSize:20}}>☁️</div>
+                        <div style={{position:"absolute",bottom:2,right:2,background:"#1565C0",
+                          borderRadius:4,padding:"1px 3px",fontSize:8,color:"white",fontWeight:700}}>Drive</div>
+                      </div>
+                    ) : t.bukti.startsWith("data:image") ? (
+                      // Gambar base64 lokal
                       <img src={t.bukti} alt="bukti"
                         style={{width:44,height:44,objectFit:"cover",borderRadius:6,
-                          border:"2px solid var(--rose)",cursor:"zoom-in",transition:"transform .15s"}}
-                        onMouseEnter={e=>e.target.style.transform="scale(1.1)"}
-                        onMouseLeave={e=>e.target.style.transform="scale(1)"}
+                          border:"2px solid var(--rose)",cursor:"zoom-in"}}
                         onClick={()=>setViewBukti({src:t.bukti,nama:t.buktiNama})}
-                        title="Klik untuk lihat bukti"/>
+                        title="Klik untuk lihat"/>
                     ) : (
+                      // PDF lokal
                       <div style={{width:44,height:44,borderRadius:6,border:"2px solid var(--gold)",
                         background:"var(--gold-light)",display:"flex",alignItems:"center",
                         justifyContent:"center",fontSize:22,cursor:"pointer"}}
-                        onClick={()=>setViewBukti({src:t.bukti,nama:t.buktiNama,isPdf:true})}
-                        title="Klik untuk lihat PDF">📄</div>
+                        onClick={()=>setViewBukti({src:t.bukti,nama:t.buktiNama,isPdf:true})}>📄</div>
                     )}
                     <span style={{fontSize:10,color:"var(--text-soft)",maxWidth:64,
                       overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}
@@ -425,20 +503,31 @@ function TransaksiTable({data, onDelete, onEdit, short}) {
         display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
         padding:20,animation:"fadeIn .2s"}}
         onClick={()=>setViewBukti(null)}>
-        <div style={{position:"relative",maxWidth:"90vw",maxHeight:"90vh",display:"flex",flexDirection:"column",alignItems:"center",gap:12}}
+        <div style={{position:"relative",maxWidth:"90vw",maxHeight:"90vh",display:"flex",
+          flexDirection:"column",alignItems:"center",gap:12}}
           onClick={e=>e.stopPropagation()}>
           {/* Header */}
           <div style={{display:"flex",alignItems:"center",gap:12,width:"100%",justifyContent:"space-between"}}>
             <span style={{color:"white",fontSize:14,fontWeight:600,maxWidth:300,
               overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
               📎 {viewBukti.nama||"Bukti Transaksi"}
+              {viewBukti.isDrive && <span style={{fontSize:10,marginLeft:6,background:"#1565C0",
+                color:"white",padding:"2px 6px",borderRadius:6}}>Google Drive</span>}
             </span>
             <div style={{display:"flex",gap:8}}>
-              <a href={viewBukti.src} download={viewBukti.nama||"bukti"}
-                style={{padding:"6px 14px",borderRadius:8,background:"var(--gold)",
-                  color:"white",fontSize:12,fontWeight:600,textDecoration:"none",display:"inline-block"}}>
-                📥 Download
-              </a>
+              {viewBukti.isDrive ? (
+                <a href={viewBukti.src} target="_blank" rel="noopener noreferrer"
+                  style={{padding:"6px 14px",borderRadius:8,background:"#1565C0",
+                    color:"white",fontSize:12,fontWeight:600,textDecoration:"none",display:"inline-block"}}>
+                  ☁️ Buka di Drive
+                </a>
+              ) : (
+                <a href={viewBukti.src} download={viewBukti.nama||"bukti"}
+                  style={{padding:"6px 14px",borderRadius:8,background:"var(--gold)",
+                    color:"white",fontSize:12,fontWeight:600,textDecoration:"none",display:"inline-block"}}>
+                  📥 Download
+                </a>
+              )}
               <button onClick={()=>setViewBukti(null)}
                 style={{padding:"6px 14px",borderRadius:8,background:"rgba(255,255,255,0.2)",
                   color:"white",border:"none",fontSize:14,cursor:"pointer",fontWeight:700}}>
@@ -447,12 +536,20 @@ function TransaksiTable({data, onDelete, onEdit, short}) {
             </div>
           </div>
           {/* Konten */}
-          {viewBukti.isPdf ? (
+          {viewBukti.isDrive ? (
+            // File Drive: tampilkan dalam iframe
+            <div style={{background:"white",borderRadius:12,overflow:"hidden",
+              width:"min(800px,85vw)",height:"70vh"}}>
+              <iframe
+                src={viewBukti.src.replace('/view','/preview')}
+                style={{width:"100%",height:"100%",border:"none"}}
+                allow="autoplay"
+                title={viewBukti.nama}/>
+            </div>
+          ) : viewBukti.isPdf ? (
             <div style={{background:"white",borderRadius:12,padding:32,textAlign:"center"}}>
               <div style={{fontSize:64,marginBottom:16}}>📄</div>
-              <div style={{fontSize:15,fontWeight:600,color:"var(--burgundy)",marginBottom:8}}>
-                {viewBukti.nama}
-              </div>
+              <div style={{fontSize:15,fontWeight:600,color:"var(--burgundy)",marginBottom:8}}>{viewBukti.nama}</div>
               <div style={{fontSize:13,color:"var(--text-soft)",marginBottom:16}}>
                 File PDF tidak dapat ditampilkan langsung.<br/>Gunakan tombol Download untuk membukanya.
               </div>
@@ -467,7 +564,7 @@ function TransaksiTable({data, onDelete, onEdit, short}) {
               style={{maxWidth:"85vw",maxHeight:"78vh",objectFit:"contain",
                 borderRadius:12,boxShadow:"0 20px 60px rgba(0,0,0,0.5)"}}/>
           )}
-          <div style={{color:"rgba(255,255,255,0.5)",fontSize:11}}>Klik di luar gambar atau ✕ untuk menutup</div>
+          <div style={{color:"rgba(255,255,255,0.5)",fontSize:11}}>Klik di luar atau ✕ untuk menutup</div>
         </div>
       </div>
     )}
@@ -1643,7 +1740,9 @@ function App() {
       tanggal:form.tanggal, jenis:form.jenis, kategori:form.kategori,
       deskripsi:form.deskripsi||"-", jumlah:Number(form.jumlah),
       kamar:form.kamar||"", rekening:form.rekening||"Al Marwa",
-      bukti:form.bukti||null, buktinNama:form.buktiNama||null
+      bukti:form.bukti||null, buktiNama:form.buktiNama||null,
+      buktiThumb:form.buktiThumb||null, buktiDrive:form.buktiDrive||false,
+      buktiId:form.buktiId||null,
     };
     if(form._editId){
       setTransaksi(p=>p.map(t=>t.id===form._editId?{...t,...data}:t));
@@ -1655,20 +1754,48 @@ function App() {
     setModal(null);setForm({});
   };
   const openEditTransaksi = (t) => {
-    setForm({_editId:t.id,tanggal:t.tanggal,jenis:t.jenis,kategori:t.kategori,jumlah:t.jumlah,
-      deskripsi:t.deskripsi,kamar:t.kamar||"",rekening:t.rekening||"Al Marwa",
-      bukti:t.bukti||null, buktiNama:t.buktiNama||null});
+    setForm({_editId:t.id, tanggal:t.tanggal, jenis:t.jenis, kategori:t.kategori,
+      jumlah:t.jumlah, deskripsi:t.deskripsi, kamar:t.kamar||"",
+      rekening:t.rekening||"Al Marwa",
+      bukti:t.bukti||null, buktiNama:t.buktiNama||null,
+      buktiThumb:t.buktiThumb||null, buktiDrive:t.buktiDrive||false,
+      buktiId:t.buktiId||null,
+    });
     setModal("transaksi");
   };
-  const handleUploadBukti = (e) => {
+  const handleUploadBukti = async (e) => {
     const file = e.target.files[0];
     if(!file) return;
     const MAX = 10 * 1024 * 1024; // 10 MB
     if(file.size > MAX){ showToast("File terlalu besar! Maksimal 10 MB","error"); e.target.value=""; return; }
-    const reader = new FileReader();
-    reader.onload = (ev) => setForm(f=>({...f, bukti:ev.target.result, buktiNama:file.name}));
-    reader.readAsDataURL(file);
-    showToast("✓ Bukti berhasil diunggah");
+
+    // Jika sudah login Google → upload ke Drive
+    if(gsSignedIn && window.gsDriveUpload) {
+      showToast("⏳ Mengupload ke Google Drive...", "info");
+      try {
+        const result = await window.gsDriveUpload(file);
+        setForm(f=>({...f,
+          bukti:     result.viewUrl,   // URL Google Drive
+          buktiNama: result.nama,
+          buktiThumb:result.thumbUrl,  // thumbnail URL
+          buktiDrive:true,             // flag: ini dari Drive bukan base64
+          buktiId:   result.fileId,
+        }));
+        showToast("✓ Bukti tersimpan ke Google Drive!");
+      } catch(err) {
+        showToast("Gagal upload ke Drive: "+String(err),"error");
+        console.error(err);
+      }
+    } else {
+      // Fallback: simpan base64 lokal (jika belum login)
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        setForm(f=>({...f, bukti:ev.target.result, buktiNama:file.name, buktiThumb:null, buktiDrive:false}));
+        showToast("✓ Bukti disimpan lokal. Login Google agar tersimpan permanen.");
+      };
+      reader.readAsDataURL(file);
+    }
+    e.target.value="";
   };
   const handleSaveKamar = () => {
     if(!form.nomor||!form.harga){showToast("Lengkapi data kamar!","error");return;}
@@ -2462,15 +2589,18 @@ function App() {
                         <div style={{fontSize:11,color:"var(--text-soft)",marginTop:2}}>Klik tombol di bawah untuk ganti</div>
                       </div>
                       <button type="button" className="btn btn-danger btn-sm"
-                        onClick={()=>setForm(f=>({...f,bukti:null,buktiNama:null}))}>✕ Hapus</button>
+                        onClick={()=>setForm(f=>({...f,bukti:null,buktiNama:null,buktiThumb:null,buktiDrive:false,buktiId:null}))}>✕ Hapus</button>
                     </div>
                   ) : (
                     <div>
                       <div style={{fontSize:32,marginBottom:6}}>📎</div>
-                      <div style={{fontSize:13,color:"var(--text-soft)",marginBottom:8}}>
-                        Drag & drop atau klik untuk upload bukti/kuitansi
+                      <div style={{fontSize:13,color:"var(--text-soft)",marginBottom:6}}>
+                        Klik untuk upload bukti/kuitansi
                       </div>
-                      <div style={{fontSize:11,color:"var(--border)"}}>JPG, PNG, PDF, WEBP — Maks. 10 MB</div>
+                      <div style={{fontSize:11,color:gsSignedIn?"#1565C0":"var(--gold)"}}>
+                        {gsSignedIn?"☁️ File otomatis tersimpan ke Google Drive":"⚠️ Login Google agar bukti tersimpan permanen"}
+                      </div>
+                      <div style={{fontSize:10,color:"var(--border)",marginTop:4}}>JPG, PNG, PDF — Maks. 10 MB</div>
                     </div>
                   )}
                   <input type="file" accept="image/*,application/pdf"
@@ -2479,15 +2609,25 @@ function App() {
                 </div>
                 {form.bukti && (
                   <div style={{marginTop:8}}>
-                    {form.bukti.startsWith("data:image") ? (
+                    {form.buktiDrive ? (
+                      // File Drive
+                      <div style={{display:"flex",alignItems:"center",gap:12,padding:"10px 14px",
+                        background:"rgba(21,101,192,0.06)",borderRadius:10,border:"1px solid rgba(21,101,192,0.2)"}}>
+                        <span style={{fontSize:28}}>☁️</span>
+                        <div style={{flex:1}}>
+                          <div style={{fontWeight:600,fontSize:13,color:"#1565C0"}}>{form.buktiNama}</div>
+                          <div style={{fontSize:11,color:"var(--text-soft)",marginTop:2}}>Tersimpan di Google Drive</div>
+                        </div>
+                        <a href={form.bukti} target="_blank" rel="noopener noreferrer"
+                          className="btn btn-secondary btn-sm">🔗 Buka</a>
+                      </div>
+                    ) : form.bukti.startsWith("data:image") ? (
                       <div style={{textAlign:"center"}}>
                         <img src={form.bukti} alt="preview"
-                          style={{maxWidth:"100%",maxHeight:260,objectFit:"contain",
+                          style={{maxWidth:"100%",maxHeight:200,objectFit:"contain",
                             borderRadius:10,border:"1px solid var(--border)",marginBottom:8}}/>
-                        <div style={{display:"flex",gap:8,justifyContent:"center"}}>
-                          <a href={form.bukti} download={form.buktiNama||"bukti"} className="btn btn-secondary btn-sm">
-                            📥 Download
-                          </a>
+                        <div style={{fontSize:11,color:"var(--gold)"}}>
+                          ⚠️ File lokal — Login Google agar tersimpan permanen di Drive
                         </div>
                       </div>
                     ) : (
