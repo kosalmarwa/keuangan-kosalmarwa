@@ -87,21 +87,46 @@
           valueInputOption: 'RAW', resource: { values },
         });
       }
-      // Simpan timestamp dan modalPemilik di sheet Meta
+      // Simpan timestamp dan settings ke tab Settings (key-value)
       const ts = Date.now();
+      try {
+        await gapi.client.sheets.spreadsheets.values.update({
+          spreadsheetId: GS_SPREADSHEET, range: 'Settings!A1',
+          valueInputOption: 'RAW',
+          resource: { values: [
+            ['key','value','keterangan'],
+            ['savedAt',    String(ts),                    'Timestamp terakhir disimpan'],
+            ['modalPemilik', String(data.modalPemilik||0), 'Modal Pemilik (Rp) — diinput manual di tab Aset'],
+          ]},
+        });
+      } catch(e) { console.warn('Settings sheet error:', e); }
+      // Tetap update Meta untuk backward compatibility
       try {
         await gapi.client.sheets.spreadsheets.values.update({
           spreadsheetId: GS_SPREADSHEET, range: 'Meta!A1',
           valueInputOption: 'RAW',
           resource: { values: [['savedAt','modalPemilik'],[String(ts),String(data.modalPemilik||0)]] },
         });
-      } catch(e) { console.warn('Meta sheet belum ada, skip timestamp'); }
+      } catch(e) { /* Meta mungkin tidak ada, tidak apa-apa */ }
       return ts;
     };
 
     // Ambil timestamp terakhir dari Google Sheets (tanpa load semua data)
     window.gsGetTimestamp = async () => {
       await window.gsSignIn();
+      try {
+        // Coba baca dari Settings dulu
+        const resp = await gapi.client.sheets.spreadsheets.values.get({
+          spreadsheetId: GS_SPREADSHEET, range: 'Settings!A1:B10',
+        });
+        const rows = resp.result.values || [];
+        if(rows.length >= 2) {
+          const dataRows = rows.slice(1);
+          const tsRow = dataRows.find(r=>r[0]==='savedAt');
+          if(tsRow) return Number(tsRow[1]) || 0;
+        }
+      } catch(e) {}
+      // Fallback ke Meta
       try {
         const resp = await gapi.client.sheets.spreadsheets.values.get({
           spreadsheetId: GS_SPREADSHEET, range: 'Meta!A1:A2',
@@ -148,19 +173,37 @@
           return obj;
         });
       }
-      // Ambil timestamp dan modalPemilik dari Meta
+      // Ambil savedAt dan modalPemilik dari Settings (utama) atau Meta (fallback)
+      let savedAt = 0, modalPemilik = null;
       try {
-        const metaResp = await gapi.client.sheets.spreadsheets.values.get({
-          spreadsheetId: GS_SPREADSHEET, range: 'Meta!A1:B2',
+        const settingsResp = await gapi.client.sheets.spreadsheets.values.get({
+          spreadsheetId: GS_SPREADSHEET, range: 'Settings!A1:C10',
         });
-        const metaRows = metaResp.result.values || [];
-        const headers  = metaRows[0] || [];
-        const values   = metaRows[1] || [];
-        const idxTs    = headers.indexOf('savedAt');
-        const idxMP    = headers.indexOf('modalPemilik');
-        result._savedAt      = idxTs >= 0 ? Number(values[idxTs]) || 0 : 0;
-        result.modalPemilik  = idxMP >= 0 ? Number(values[idxMP]) || 0 : 0;
-      } catch(e) { result._savedAt = 0; result.modalPemilik = 0; }
+        const sRows = settingsResp.result.values || [];
+        if(sRows.length >= 2) {
+          const dataRows = sRows.slice(1); // skip header row
+          const tsRow = dataRows.find(r=>r[0]==='savedAt');
+          const mpRow = dataRows.find(r=>r[0]==='modalPemilik');
+          if(tsRow) savedAt = Number(tsRow[1]) || 0;
+          if(mpRow) { const v=Number(mpRow[1]); if(v>0) modalPemilik=v; }
+        }
+      } catch(e) {
+        // Fallback ke Meta sheet (data lama)
+        try {
+          const metaResp = await gapi.client.sheets.spreadsheets.values.get({
+            spreadsheetId: GS_SPREADSHEET, range: 'Meta!A1:B2',
+          });
+          const metaRows = metaResp.result.values || [];
+          const headers  = metaRows[0] || [];
+          const values   = metaRows[1] || [];
+          const idxTs = headers.indexOf('savedAt');
+          const idxMP = headers.indexOf('modalPemilik');
+          if(idxTs>=0) savedAt = Number(values[idxTs]) || 0;
+          if(idxMP>=0) { const v=Number(values[idxMP]); if(v>0) modalPemilik=v; }
+        } catch(e2) {}
+      }
+      result._savedAt     = savedAt;
+      result.modalPemilik = modalPemilik; // null jika tidak ditemukan / 0
       return result;
     };
 
@@ -1822,7 +1865,8 @@ function App() {
   const [kamar, setKamar] = useState(saved?.kamar || INIT.kamar);
   const [aset, setAset] = useState(saved?.aset || INIT.aset);
   const [kewajiban, setKewajiban] = useState(saved?.kewajiban || INIT.kewajiban);
-  const [modalPemilik, setModalPemilik] = useState(saved?.modalPemilik ?? INIT.modalPemilik);
+  // Prioritas: localStorage > INIT. Nilai 0 dianggap belum diset → pakai INIT
+  const [modalPemilik, setModalPemilik] = useState((saved?.modalPemilik && saved.modalPemilik > 0) ? saved.modalPemilik : INIT.modalPemilik);
   const [filter, setFilter] = useState({bulan:now.getMonth()+1, tahun:now.getFullYear()});
   const [filterNeraca, setFilterNeraca] = useState({bulan:now.getMonth()+1, tahun:now.getFullYear()});
   const [filterTransaksi, setFilterTransaksi] = React.useState({jenis:"",kategori:"",rekening:"",kamar:""});
@@ -1957,7 +2001,9 @@ function App() {
     if(sheetsData.kamar)      setKamar(sheetsData.kamar);
     if(sheetsData.aset)       setAset(sheetsData.aset);
     if(sheetsData.kewajiban)  setKewajiban(sheetsData.kewajiban);
-    if(sheetsData.modalPemilik != null) setModalPemilik(Number(sheetsData.modalPemilik));
+    // Hanya terapkan modalPemilik dari Sheets jika nilainya valid (> 0)
+    if(sheetsData.modalPemilik != null && Number(sheetsData.modalPemilik) > 0)
+      setModalPemilik(Number(sheetsData.modalPemilik));
     setLoadedAt(sheetsData._savedAt || Date.now());
     setSyncStatus("saved"); setSyncTime(new Date());
     showToast("✓ Data dimuat dari Google Sheets");
