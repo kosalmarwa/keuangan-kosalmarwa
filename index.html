@@ -68,7 +68,7 @@
       await window.gsSignIn();
       const sheets = [
         { name:'Transaksi',   rows: data.transaksi,  headers:['id','tanggal','jenis','kategori','deskripsi','jumlah','kamar','rekening','bukti','buktiNama','buktiThumb','buktiDrive','buktiId'] },
-        { name:'Kamar',       rows: data.kamar,      headers:['id','nomor','penghuni','harga','status','masuk','akhirSewa'] },
+        { name:'Kamar',       rows: data.kamar,      headers:['id','nomor','penghuni','harga','status','masuk','akhirSewa','telepon'] },
         { name:'Aset',        rows: data.aset,       headers:['id','nama','nilai','penyusutan','jenis','keterangan','tanggalBeli','usiaPakai'] },
         { name:'Kewajiban',   rows: data.kewajiban,  headers:['id','nama','jumlah','cicilan'] },
       ];
@@ -87,12 +87,13 @@
           valueInputOption: 'RAW', resource: { values },
         });
       }
-      // Simpan timestamp di sheet Meta
+      // Simpan timestamp dan modalPemilik di sheet Meta
       const ts = Date.now();
       try {
         await gapi.client.sheets.spreadsheets.values.update({
           spreadsheetId: GS_SPREADSHEET, range: 'Meta!A1',
-          valueInputOption: 'RAW', resource: { values: [['savedAt'],[String(ts)]] },
+          valueInputOption: 'RAW',
+          resource: { values: [['savedAt','modalPemilik'],[String(ts),String(data.modalPemilik||0)]] },
         });
       } catch(e) { console.warn('Meta sheet belum ada, skip timestamp'); }
       return ts;
@@ -147,14 +148,19 @@
           return obj;
         });
       }
-      // Ambil timestamp Meta
+      // Ambil timestamp dan modalPemilik dari Meta
       try {
         const metaResp = await gapi.client.sheets.spreadsheets.values.get({
-          spreadsheetId: GS_SPREADSHEET, range: 'Meta!A1:A2',
+          spreadsheetId: GS_SPREADSHEET, range: 'Meta!A1:B2',
         });
         const metaRows = metaResp.result.values || [];
-        result._savedAt = metaRows.length >= 2 ? Number(metaRows[1][0]) || 0 : 0;
-      } catch(e) { result._savedAt = 0; }
+        const headers  = metaRows[0] || [];
+        const values   = metaRows[1] || [];
+        const idxTs    = headers.indexOf('savedAt');
+        const idxMP    = headers.indexOf('modalPemilik');
+        result._savedAt      = idxTs >= 0 ? Number(values[idxTs]) || 0 : 0;
+        result.modalPemilik  = idxMP >= 0 ? Number(values[idxMP]) || 0 : 0;
+      } catch(e) { result._savedAt = 0; result.modalPemilik = 0; }
       return result;
     };
 
@@ -333,9 +339,14 @@ const { useState, useEffect } = React;
 
 const fmt = n => "Rp " + Number(n||0).toLocaleString("id-ID");
 const today = () => new Date().toISOString().slice(0,10);
+// Parse tanggal 'YYYY-MM-DD' sebagai local time (hindari timezone UTC shift)
+const parseDate = (str) => { if(!str) return null; const [y,m,d]=str.split('-').map(Number); return new Date(y,m-1,d); };
+// Hitung selisih hari antara dua tanggal lokal (positif = masa depan)
+const selisihHari = (tglStr, base) => { const t=parseDate(tglStr); if(!t) return null; return Math.round((t-base)/(1000*60*60*24)); };
 const BULAN = ["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"];
+const KATEGORI_BELI_ASET = "Pembelian Aset"; // Kategori khusus - bukan beban, hanya pengurang kas
 const KAT_MASUK = ["Sewa Kamar","Pembayaran Listrik (Penghuni)","Deposit Kamar","Denda Keterlambatan","Laundry","Parkir","Lainnya Pemasukan"];
-const KAT_KELUAR = ["Listrik PLN","Air PAM","Internet/WiFi","Gaji Karyawan","Perawatan Bangunan","Kebersihan","Perlengkapan Kamar","Pajak","Asuransi","Biaya Admin Bank","ATK/Administrasi","Marketing/Iklan","Lainnya Pengeluaran"];
+const KAT_KELUAR = ["Listrik PLN","Air PAM","Internet/WiFi","Gaji Karyawan","Perawatan Bangunan","Kebersihan","Perlengkapan Kamar","Pajak","Asuransi","Biaya Admin Bank","ATK/Administrasi","Marketing/Iklan","Lainnya Pengeluaran","Pembelian Aset"];
 
 const LOAD = () => {
   try { const d = localStorage.getItem("almarwa_data"); return d ? JSON.parse(d) : null; } catch{return null;}
@@ -361,11 +372,11 @@ const INIT = {
     {id:10,tanggal:"2025-05-15",jenis:"Pengeluaran",kategori:"Kebersihan",deskripsi:"Perlengkapan kebersihan",jumlah:120000,kamar:"",rekening:"Al Marwa"},
   ],
   kamar: [
-    {id:1,nomor:"101",penghuni:"Siti Nurhaliza",harga:900000,status:"Terisi",masuk:"2024-01-01",akhirSewa:"2026-06-01"},
-    {id:2,nomor:"102",penghuni:"Dewi Rahayu",harga:900000,status:"Terisi",masuk:"2024-02-01",akhirSewa:"2026-06-01"},
-    {id:3,nomor:"201",penghuni:"-",harga:1000000,status:"Kosong",masuk:"",akhirSewa:""},
-    {id:4,nomor:"202",penghuni:"Rina Susanti",harga:1000000,status:"Terisi",masuk:"2024-03-01",akhirSewa:"2026-06-03"},
-    {id:5,nomor:"301",penghuni:"Mega Wulandari",harga:1200000,status:"Terisi",masuk:"2024-01-15",akhirSewa:"2026-07-15"},
+    {id:1,nomor:"101",penghuni:"Siti Nurhaliza",harga:900000,status:"Terisi",masuk:"2024-01-01",akhirSewa:"2026-06-01",telepon:""},
+    {id:2,nomor:"102",penghuni:"Dewi Rahayu",harga:900000,status:"Terisi",masuk:"2024-02-01",akhirSewa:"2026-06-01",telepon:""},
+    {id:3,nomor:"201",penghuni:"-",harga:1000000,status:"Kosong",masuk:"",akhirSewa:"",telepon:""},
+    {id:4,nomor:"202",penghuni:"Rina Susanti",harga:1000000,status:"Terisi",masuk:"2024-03-01",akhirSewa:"2026-06-03",telepon:""},
+    {id:5,nomor:"301",penghuni:"Mega Wulandari",harga:1200000,status:"Terisi",masuk:"2024-01-15",akhirSewa:"2026-07-15",telepon:""},
   ],
   aset: [
     {id:1,nama:"Kas / Uang Tunai",nilai:5000000,penyusutan:0,jenis:"lancar",keterangan:"Kas operasional harian",tanggalBeli:"",usiaPakai:0},
@@ -381,9 +392,64 @@ const INIT = {
     {id:2,nama:"Deposit Penghuni (titipan)",jumlah:5000000,cicilan:0},
   ],
   modalAwal: 400000000,
+  modalPemilik: 500000000,
 };
 
 // ─── KOMPONEN FILTER BAR ────────────────────────────────────────────────────
+// ─── TEMPLATE WA CARD ───────────────────────────────────────────────────────
+const DEFAULT_TEMPLATE_WA = "Assalamu'alaikum Kak {nama} 🌸\n\nKami dari Kos Putri Almarwa ingin menginformasikan bahwa masa sewa Kamar {kamar} akan berakhir pada {tanggal}.\n\nApakah Kak {nama} berencana untuk memperpanjang masa sewa? 🙏\n\nHarga sewa saat ini: {harga}/bulan\n\nMohon konfirmasinya ya Kak, terima kasih 😊\n\nKos Putri Almarwa";
+
+function TemplateWACard({template, setTemplate}) {
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState(template);
+  const varList = ["{nama}","{kamar}","{tanggal}","{harga}"];
+  return (
+    <div className="card" style={{marginBottom:20}}>
+      <div className="section-header" style={{marginBottom:10}}>
+        <div className="card-title" style={{marginBottom:0}}>💬 Template Pesan WhatsApp</div>
+        {!editing
+          ? <button className="btn btn-secondary btn-sm" onClick={()=>{setDraft(template);setEditing(true);}}>✏️ Edit Template</button>
+          : <div style={{display:"flex",gap:8}}>
+              <button className="btn btn-secondary btn-sm" onClick={()=>{setTemplate(DEFAULT_TEMPLATE_WA);setDraft(DEFAULT_TEMPLATE_WA);setEditing(false);}}>↺ Reset</button>
+              <button className="btn btn-secondary btn-sm" onClick={()=>setEditing(false)}>Batal</button>
+              <button className="btn btn-primary btn-sm" onClick={()=>{setTemplate(draft);setEditing(false);}}>✓ Simpan</button>
+            </div>
+        }
+      </div>
+      {editing ? (
+        <div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
+            <span style={{fontSize:12,color:"var(--text-soft)",alignSelf:"center"}}>Variabel:</span>
+            {varList.map(v=>(
+              <span key={v} style={{fontSize:12,fontFamily:"monospace",background:"var(--rose-pale)",
+                color:"var(--burgundy)",padding:"2px 8px",borderRadius:6,cursor:"pointer",fontWeight:600}}
+                onClick={()=>setDraft(d=>d+v)} title="Klik untuk sisipkan">
+                {v}
+              </span>
+            ))}
+          </div>
+          <textarea value={draft} onChange={e=>setDraft(e.target.value)}
+            style={{width:"100%",minHeight:180,padding:"12px",fontSize:13,borderRadius:10,
+              border:"1.5px solid var(--border)",background:"var(--surface)",color:"var(--text)",
+              fontFamily:"DM Sans, sans-serif",lineHeight:1.6,resize:"vertical",boxSizing:"border-box"}}/>
+          <div style={{fontSize:11,color:"var(--text-soft)",marginTop:4}}>
+            Klik variabel di atas untuk menyisipkan ke posisi kursor, atau ketik langsung.
+          </div>
+        </div>
+      ) : (
+        <div style={{background:"var(--rose-pale)",borderRadius:10,padding:"12px 16px",
+          fontSize:13,lineHeight:1.7,color:"var(--text)",whiteSpace:"pre-wrap",
+          fontFamily:"DM Sans, sans-serif",border:"1px solid rgba(123,45,62,0.1)"}}>
+          {template}
+          <div style={{marginTop:8,fontSize:11,color:"var(--text-soft)"}}>
+            Variabel: <code>{"{nama}"}</code> · <code>{"{kamar}"}</code> · <code>{"{tanggal}"}</code> · <code>{"{harga}"}</code>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FilterBar({filter, setFilter}) {
   return (
     <div className="card" style={{padding:"16px 20px",marginBottom:20}}>
@@ -400,10 +466,106 @@ function FilterBar({filter, setFilter}) {
   );
 }
 
+// ─── FILTER TRANSAKSI (Tab Transaksi) ───────────────────────────────────────
+function TransaksiFilterBar({transaksi, filter, setFilter}) {
+  // Daftar nilai unik dari data transaksi bulan ini
+  const daftarKamar = React.useMemo(()=>{
+    const s = [...new Set(transaksi.map(t=>t.kamar).filter(Boolean))].sort((a,b)=>String(a).localeCompare(String(b),"id",{numeric:true}));
+    return s;
+  },[transaksi]);
+
+  const daftarKategori = React.useMemo(()=>{
+    let list = transaksi;
+    if(filter.jenis) list = list.filter(t=>t.jenis===filter.jenis);
+    return [...new Set(list.map(t=>t.kategori).filter(Boolean))].sort();
+  },[transaksi, filter.jenis]);
+
+  const selStyle = {padding:"7px 12px",fontSize:13,borderRadius:8,border:"1.5px solid var(--border)",background:"var(--surface)",color:"var(--text)",minWidth:130};
+  const hasFilter = filter.jenis||filter.kategori||filter.rekening||filter.kamar;
+
+  return (
+    <div style={{display:"flex",flexWrap:"wrap",gap:10,alignItems:"center",marginBottom:16,
+      background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:12,padding:"14px 18px"}}>
+      <span style={{fontWeight:600,fontSize:13,color:"var(--text-soft)",marginRight:4}}>🔍 Filter:</span>
+
+      <select style={selStyle} value={filter.jenis}
+        onChange={e=>setFilter(f=>({...f,jenis:e.target.value,kategori:""}))}>
+        <option value="">Semua Jenis</option>
+        <option value="Pemasukan">▲ Pemasukan</option>
+        <option value="Pengeluaran">▼ Pengeluaran</option>
+      </select>
+
+      <select style={selStyle} value={filter.kategori}
+        onChange={e=>setFilter(f=>({...f,kategori:e.target.value}))}>
+        <option value="">Semua Kategori</option>
+        {daftarKategori.map(k=><option key={k} value={k}>{k}</option>)}
+      </select>
+
+      <select style={selStyle} value={filter.rekening}
+        onChange={e=>setFilter(f=>({...f,rekening:e.target.value}))}>
+        <option value="">Semua Rekening</option>
+        <option value="Al Marwa">🏦 Al Marwa</option>
+        <option value="Pribadi">👤 Pribadi</option>
+      </select>
+
+      <select style={selStyle} value={filter.kamar}
+        onChange={e=>setFilter(f=>({...f,kamar:e.target.value}))}>
+        <option value="">Semua Kamar</option>
+        {daftarKamar.map(k=><option key={k} value={k}>Kamar {k}</option>)}
+      </select>
+
+      {hasFilter && (
+        <button style={{padding:"7px 14px",fontSize:12,borderRadius:8,border:"none",
+          background:"rgba(123,45,62,0.1)",color:"var(--burgundy)",cursor:"pointer",fontWeight:600}}
+          onClick={()=>setFilter({jenis:"",kategori:"",rekening:"",kamar:""})}>
+          ✕ Reset Filter
+        </button>
+      )}
+
+      {hasFilter && (
+        <span style={{marginLeft:"auto",fontSize:12,color:"var(--text-soft)",fontStyle:"italic"}}>
+          {transaksi.filter(t=>{
+            if(filter.jenis && t.jenis!==filter.jenis) return false;
+            if(filter.kategori && t.kategori!==filter.kategori) return false;
+            if(filter.rekening && (t.rekening||"Al Marwa")!==filter.rekening) return false;
+            if(filter.kamar && t.kamar!==filter.kamar) return false;
+            return true;
+          }).length} dari {transaksi.length} transaksi
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ─── TABEL TRANSAKSI ────────────────────────────────────────────────────────
-// ─── TABEL TRANSAKSI ────────────────────────────────────────────────────────
-function TransaksiTable({data, onDelete, onEdit, short}) {
-  const [viewBukti, setViewBukti] = React.useState(null); // {src, nama}
+function TransaksiTable({data, onDelete, onEdit, short, sort, setSort}) {
+  const [viewBukti, setViewBukti] = React.useState(null);
+
+  const sortedData = React.useMemo(()=>{
+    if(!sort||!sort.col||sort.dir===0) return data;
+    return [...data].sort((a,b)=>{
+      let va=a[sort.col]||"", vb=b[sort.col]||"";
+      if(sort.col==="jumlah"){ va=Number(va)||0; vb=Number(vb)||0; return sort.dir*(va-vb); }
+      if(sort.col==="tanggal"){ return sort.dir*(new Date(va)-new Date(vb)); }
+      return sort.dir*(String(va).localeCompare(String(vb),"id"));
+    });
+  },[data,sort]);
+
+  const SortTh = ({col, label}) => {
+    if(!setSort) return <th>{label}</th>;
+    const active = sort&&sort.col===col&&sort.dir!==0;
+    const icon = active?(sort.dir===1?"▲":"▼"):"↕";
+    return (
+      <th style={{cursor:"pointer",userSelect:"none",whiteSpace:"nowrap"}}
+        onClick={()=>setSort(s=>{
+          if(s.col!==col) return {col,dir:1};
+          if(s.dir===1) return {col,dir:-1};
+          return {col:"",dir:0};
+        })}>
+        {label} <span style={{fontSize:10,opacity:active?1:0.3,color:active?"var(--burgundy)":"inherit"}}>{icon}</span>
+      </th>
+    );
+  };
 
   if(!data.length) return (
     <div className="empty-state">
@@ -417,17 +579,19 @@ function TransaksiTable({data, onDelete, onEdit, short}) {
       <table>
         <thead>
           <tr>
-            <th>Tanggal</th><th>Jenis</th><th>Kategori</th>
+            <SortTh col="tanggal" label="Tanggal"/>
+            <SortTh col="jenis" label="Jenis"/>
+            <SortTh col="kategori" label="Kategori"/>
             {!short && <th>Keterangan</th>}
-            <th>Jumlah</th>
-            {!short && <th>Rekening</th>}
-            {!short && <th>Kamar</th>}
+            <SortTh col="jumlah" label="Jumlah"/>
+            {!short && <SortTh col="rekening" label="Rekening"/>}
+            {!short && <SortTh col="kamar" label="Kamar"/>}
             {!short && <th>Bukti</th>}
             <th>Aksi</th>
           </tr>
         </thead>
         <tbody>
-          {data.map(t=>(
+          {sortedData.map(t=>(
             <tr key={t.id}>
               <td style={{fontSize:13}}>{t.tanggal}</td>
               <td><span className={`badge ${t.jenis==="Pemasukan"?"badge-green":"badge-rose"}`}>{t.jenis==="Pemasukan"?"▲":"▼"} {t.jenis}</span></td>
@@ -595,12 +759,16 @@ function SelectorRekening({value, onChange}) {
 
 // ─── LAPORAN LABA RUGI BULANAN ──────────────────────────────────────────────
 function LabaRugiReport({transaksi, aset, bulan, tahun}) {
-  const masuk  = transaksi.filter(t=>t.jenis==="Pemasukan");
-  const keluar = transaksi.filter(t=>t.jenis==="Pengeluaran");
+  const masuk      = transaksi.filter(t=>t.jenis==="Pemasukan");
+  const keluar     = transaksi.filter(t=>t.jenis==="Pengeluaran");
+  const keluarOps  = keluar.filter(t=>t.kategori!==KATEGORI_BELI_ASET); // pengeluaran operasional saja
+  const keluarAset = keluar.filter(t=>t.kategori===KATEGORI_BELI_ASET); // pembelian aset
   const grp = (arr,key) => arr.reduce((a,t)=>{a[t[key]]=(a[t[key]]||0)+t.jumlah;return a},{});
-  const pGrp = grp(masuk,"kategori"), kGrp = grp(keluar,"kategori");
-  const totM  = masuk.reduce((s,t)=>s+t.jumlah,0);
-  const totKTunai = keluar.reduce((s,t)=>s+t.jumlah,0);
+  const pGrp = grp(masuk,"kategori");
+  const kGrp = grp(keluarOps,"kategori"); // hanya operasional
+  const totM       = masuk.reduce((s,t)=>s+t.jumlah,0);
+  const totKTunai  = keluarOps.reduce((s,t)=>s+t.jumlah,0); // tanpa pembelian aset
+  const totBeliAsetLR = keluarAset.reduce((s,t)=>s+t.jumlah,0);
 
   // Filter aset tetap: hanya yang sudah dibeli s/d bulan laporan
   const bln0 = (bulan||1) - 1; // 0-based
@@ -683,7 +851,27 @@ function LabaRugiReport({transaksi, aset, bulan, tahun}) {
         </>
       )}
 
-      <div className="report-row subtotal"><span>Total Beban</span><span className="amount-neg">{fmt(totK)}</span></div>
+      <div className="report-row subtotal"><span>Total Beban Operasional</span><span className="amount-neg">{fmt(totKTunai)}</span></div>
+
+      {/* Pembelian Aset — bukan beban, hanya info */}
+      {totBeliAsetLR > 0 && (<>
+        <div className="report-row header" style={{background:"rgba(196,154,90,0.08)",color:"var(--gold)"}}>
+          🏛️ PEMBELIAN ASET (Non-Beban)
+        </div>
+        {keluarAset.map(t=>(
+          <div className="report-row" key={t.id} style={{background:"rgba(196,154,90,0.05)"}}>
+            <div>
+              <div style={{fontWeight:500}}>{t.deskripsi||t.kategori}</div>
+              <div style={{fontSize:11,color:"var(--text-soft)"}}>Bukan beban — mengurangi kas, menambah aset tetap</div>
+            </div>
+            <span style={{color:"var(--gold)",fontWeight:600}}>{fmt(t.jumlah)}</span>
+          </div>
+        ))}
+        <div className="report-row" style={{background:"rgba(196,154,90,0.08)",borderTop:"1px solid var(--gold)"}}>
+          <span style={{color:"var(--gold)",fontWeight:600}}>Total Pembelian Aset</span>
+          <span style={{color:"var(--gold)",fontWeight:700}}>{fmt(totBeliAsetLR)}</span>
+        </div>
+      </>)}
 
       {/* LABA BERSIH AKUNTANSI */}
       <div className="report-row total">
@@ -713,7 +901,7 @@ function LabaRugiReport({transaksi, aset, bulan, tahun}) {
 }
 
 // ─── NERACA ─────────────────────────────────────────────────────────────────
-function NeracaReport({aset, kewajiban, modalAwal, akumLabaDitahan, labaTahunIni, tahun, bulan, totAsetTetapBruto, totKwj}) {
+function NeracaReport({aset, kewajiban, modalAwal, akumLabaDitahan, labaTahunIni, tahun, bulan, totKwj, modalPemilik}) {
   // SISI AKTIVA
   const nBln0 = (bulan||12) - 1; // bulan neraca 0-based
 
@@ -860,10 +1048,10 @@ function NeracaReport({aset, kewajiban, modalAwal, akumLabaDitahan, labaTahunIni
           <span>💰 MODAL / EKUITAS</span>
         </div>
 
-        {/* Modal Awal: otomatis dari Aset Tetap Bruto - Kewajiban */}
-        <R label="Modal Awal" val={modalAwal}
-           sub={"Aset Tetap Bruto ("+fmt(totAsetTetapBruto)+") − Kewajiban ("+fmt(totKwj)+")"}
-           indent/>
+        {/* Modal Pemilik — diinput manual */}
+        <R label="Modal Pemilik" val={modalPemilik}
+           sub={"Setoran modal pemilik (diinput manual) − Kewajiban "+fmt(totKwj)+" = "+fmt(modalAwal)}
+           color="var(--burgundy)" indent/>
 
         {/* Akumulasi Laba Ditahan tahun-tahun sebelumnya */}
         {akumLabaDitahan !== 0 && (
@@ -918,14 +1106,16 @@ function LabaRugiTahunan({transaksi, aset, jenisLabel}) {
   const [tahun, setTahun] = useState(tahunList[0]||curYear);
   const [mode, setMode] = useState("ringkasan");
 
-  const dataT = transaksi.filter(t=>new Date(t.tanggal).getFullYear()===tahun);
+  const dataT    = transaksi.filter(t=>new Date(t.tanggal).getFullYear()===tahun);
+  const dataTOps = dataT.filter(t=>t.jenis!=="Pengeluaran"||t.kategori!==KATEGORI_BELI_ASET);
   const katM = [...new Set(dataT.filter(t=>t.jenis==="Pemasukan").map(t=>t.kategori))];
-  const katK = [...new Set(dataT.filter(t=>t.jenis==="Pengeluaran").map(t=>t.kategori))];
+  const katK = [...new Set(dataT.filter(t=>t.jenis==="Pengeluaran"&&t.kategori!==KATEGORI_BELI_ASET).map(t=>t.kategori))];
   const totPerKat = (jenis,kat) => dataT.filter(t=>t.jenis===jenis&&t.kategori===kat).reduce((s,t)=>s+t.jumlah,0);
   const perBulanKat = (jenis,kat,bln) => dataT.filter(t=>t.jenis===jenis&&t.kategori===kat&&new Date(t.tanggal).getMonth()===bln).reduce((s,t)=>s+t.jumlah,0);
-  const totBulan = (jenis,bln) => dataT.filter(t=>t.jenis===jenis&&new Date(t.tanggal).getMonth()===bln).reduce((s,t)=>s+t.jumlah,0);
-  const totM = dataT.filter(t=>t.jenis==="Pemasukan").reduce((s,t)=>s+t.jumlah,0);
-  const totKTunai = dataT.filter(t=>t.jenis==="Pengeluaran").reduce((s,t)=>s+t.jumlah,0);
+  const totBulan = (jenis,bln) => dataT.filter(t=>t.jenis===jenis&&t.kategori!==KATEGORI_BELI_ASET&&new Date(t.tanggal).getMonth()===bln).reduce((s,t)=>s+t.jumlah,0);
+  const totM       = dataT.filter(t=>t.jenis==="Pemasukan").reduce((s,t)=>s+t.jumlah,0);
+  const totKTunai  = dataT.filter(t=>t.jenis==="Pengeluaran"&&t.kategori!==KATEGORI_BELI_ASET).reduce((s,t)=>s+t.jumlah,0);
+  const totBeliAsetThn = dataT.filter(t=>t.jenis==="Pengeluaran"&&t.kategori===KATEGORI_BELI_ASET).reduce((s,t)=>s+t.jumlah,0);
 
   // Penyusutan per aset per bulan — mulai dari tanggal beli, berhenti setelah usia pakai habis
   const asetTetap = (aset||[]).filter(a=>a.jenis==="tetap"||!a.jenis);
@@ -1472,8 +1662,18 @@ function App() {
   const [kamar, setKamar] = useState(saved?.kamar || INIT.kamar);
   const [aset, setAset] = useState(saved?.aset || INIT.aset);
   const [kewajiban, setKewajiban] = useState(saved?.kewajiban || INIT.kewajiban);
+  const [modalPemilik, setModalPemilik] = useState(saved?.modalPemilik ?? INIT.modalPemilik);
   const [filter, setFilter] = useState({bulan:now.getMonth()+1, tahun:now.getFullYear()});
   const [filterNeraca, setFilterNeraca] = useState({bulan:now.getMonth()+1, tahun:now.getFullYear()});
+  const [filterTransaksi, setFilterTransaksi] = React.useState({jenis:"",kategori:"",rekening:"",kamar:""});
+  const [sortTransaksi, setSortTransaksi] = React.useState({col:"",dir:0});
+  const [sortKamar, setSortKamar] = React.useState({col:"",dir:0});
+  const [templateWA, setTemplateWA] = React.useState(()=>{
+    try{ const t=localStorage.getItem("almarwa_templateWA"); return t||"Assalamu'alaikum Kak {nama} 🌸\n\nKami dari Kos Putri Almarwa ingin menginformasikan bahwa masa sewa Kamar {kamar} akan berakhir pada {tanggal}.\n\nApakah Kak {nama} berencana untuk memperpanjang masa sewa? 🙏\n\nHarga sewa saat ini: {harga}/bulan\n\nMohon konfirmasinya ya Kak, terima kasih 😊\n\nKos Putri Almarwa"; }catch{ return "Assalamu'alaikum Kak {nama} 🌸\n\nKami dari Kos Putri Almarwa ingin menginformasikan bahwa masa sewa Kamar {kamar} akan berakhir pada {tanggal}.\n\nApakah Kak {nama} berencana untuk memperpanjang masa sewa? 🙏\n\nHarga sewa saat ini: {harga}/bulan\n\nMohon konfirmasinya ya Kak, terima kasih 😊\n\nKos Putri Almarwa"; }
+  });
+  React.useEffect(()=>{
+    try{ localStorage.setItem("almarwa_templateWA", templateWA); }catch{}
+  },[templateWA]);
   const [jenisLR,      setJenisLR]      = useState("semua");
   const [jenisNeraca,  setJenisNeraca]  = useState("semua");
   const [jenisTahunan, setJenisTahunan] = useState("semua");
@@ -1495,8 +1695,8 @@ function App() {
 
   // ── Auto-save ke localStorage ─────────────────────────────────────────────
   useEffect(()=>{
-    SAVE({transaksi,kamar,aset,kewajiban});
-  },[transaksi,kamar,aset,kewajiban]);
+    SAVE({transaksi,kamar,aset,kewajiban,modalPemilik});
+  },[transaksi,kamar,aset,kewajiban,modalPemilik]);
 
   // ── Auto-save ke Google Sheets (debounce 5 detik) ─────────────────────────
   useEffect(()=>{
@@ -1505,7 +1705,7 @@ function App() {
     setSyncStatus("pending");
     autoSaveTimer.current = setTimeout(()=>{ doAutoSave(); }, 5000);
     return ()=>{ if(autoSaveTimer.current) clearTimeout(autoSaveTimer.current); };
-  },[transaksi,kamar,aset,kewajiban,gsSignedIn]);
+  },[transaksi,kamar,aset,kewajiban,modalPemilik,gsSignedIn]);
 
   const doAutoSave = async (retries=0) => {
     if(isSaving.current) return;
@@ -1522,7 +1722,7 @@ function App() {
         setModal("syncConflict");
         return;
       }
-      const ts = await window.gsSave({transaksi,kamar,aset,kewajiban});
+      const ts = await window.gsSave({transaksi,kamar,aset,kewajiban,modalPemilik});
       setSyncTime(new Date());
       setLoadedAt(ts);
       setSyncStatus("saved");
@@ -1596,6 +1796,7 @@ function App() {
     if(sheetsData.kamar)      setKamar(sheetsData.kamar);
     if(sheetsData.aset)       setAset(sheetsData.aset);
     if(sheetsData.kewajiban)  setKewajiban(sheetsData.kewajiban);
+    if(sheetsData.modalPemilik != null) setModalPemilik(Number(sheetsData.modalPemilik));
     setLoadedAt(sheetsData._savedAt || Date.now());
     setSyncStatus("saved"); setSyncTime(new Date());
     showToast("✓ Data dimuat dari Google Sheets");
@@ -1648,8 +1849,10 @@ function App() {
     return d.getMonth()+1===filter.bulan && d.getFullYear()===filter.tahun;
   });
 
-  const totM = filtered.filter(t=>t.jenis==="Pemasukan").reduce((s,t)=>s+t.jumlah,0);
-  const totK = filtered.filter(t=>t.jenis==="Pengeluaran").reduce((s,t)=>s+t.jumlah,0);
+  const totM       = filtered.filter(t=>t.jenis==="Pemasukan").reduce((s,t)=>s+t.jumlah,0);
+  const totBeliAset= filtered.filter(t=>t.jenis==="Pengeluaran"&&t.kategori===KATEGORI_BELI_ASET).reduce((s,t)=>s+t.jumlah,0);
+  const totK       = filtered.filter(t=>t.jenis==="Pengeluaran"&&t.kategori!==KATEGORI_BELI_ASET).reduce((s,t)=>s+t.jumlah,0);
+  const totKKas    = totK + totBeliAset; // total kas keluar (untuk saldo dashboard)
   // Penyusutan bulan berjalan (laba rugi bulanan) - pakai bulan & tahun filter + usia pakai
   const totPenyAset = aset.filter(a=>a.jenis==="tetap"||!a.jenis).reduce((s,a)=>{
     if(!a.penyusutan) return s;
@@ -1699,9 +1902,9 @@ function App() {
     if(beli.getFullYear() === nTahun && beli.getMonth() > nBln0) return false;
     return true;
   });
-  const totAsetTetapBruto = asetTetapList.reduce((s,a)=>s+a.nilai,0);
+  // Modal Awal = Modal Pemilik (diinput manual, fixed)
   const totKwj            = kewajiban.reduce((s,k)=>s+k.jumlah,0);
-  const modalAwal         = totAsetTetapBruto - totKwj;
+  const modalAwal         = modalPemilik - totKwj;
 
   // Helper: penyusutan 1 aset untuk bulan bln (0-11) di tahun thn
   const penyAsetBulan = (a, thn, bln) => {
@@ -1828,7 +2031,7 @@ function App() {
     const data = {
       nomor:form.nomor, penghuni:form.penghuni||"-",
       harga:Number(form.harga), status:form.penghuni&&form.penghuni!=="-"?"Terisi":"Kosong",
-      masuk:form.masuk||"", akhirSewa:form.akhirSewa||""
+      masuk:form.masuk||"", akhirSewa:form.akhirSewa||"", telepon:form.telepon||""
     };
     if(form._editId) {
       setKamar(p=>p.map(k=>k.id===form._editId?{...k,...data}:k));
@@ -1987,8 +2190,7 @@ function App() {
             const tod=new Date(); tod.setHours(0,0,0,0);
             const notif=kamar.filter(k=>{
               if(!k.akhirSewa||k.status!=="Terisi") return false;
-              const akhir=new Date(k.akhirSewa); akhir.setHours(0,0,0,0);
-              const s=Math.ceil((akhir-tod)/(1000*60*60*24));
+              const s=selisihHari(k.akhirSewa,tod);
               return s>=0&&s<=5;
             });
             if(!notif.length) return null;
@@ -2007,7 +2209,7 @@ function App() {
             </div>;
           })()}
           <FilterBar filter={filter} setFilter={setFilter}/>
-          {/* Baris 1: Pemasukan & Pengeluaran */}
+          {/* Baris 1: Pemasukan & Pengeluaran Kas */}
           <div className="stat-grid" style={{gridTemplateColumns:"repeat(2,1fr)",marginBottom:12}}>
             <div className="stat-card green">
               <div className="stat-label">Total Pemasukan</div>
@@ -2015,22 +2217,24 @@ function App() {
               <div className="stat-sub">{BULAN[filter.bulan-1]} {filter.tahun}</div>
             </div>
             <div className="stat-card rose">
-              <div className="stat-label">Total Pengeluaran</div>
-              <div className="stat-value">{fmt(totK)}</div>
-              <div className="stat-sub">{BULAN[filter.bulan-1]} {filter.tahun}</div>
+              <div className="stat-label">Total Pengeluaran Kas</div>
+              <div className="stat-value">{fmt(totKKas)}</div>
+              <div className="stat-sub">
+                Operasional {fmt(totK)}{totBeliAset>0?` · Beli Aset ${fmt(totBeliAset)}`:""}
+              </div>
             </div>
           </div>
           {/* Baris 2: Laba Kas, Laba Akuntansi, Hunian */}
           <div className="stat-grid" style={{gridTemplateColumns:"repeat(3,1fr)"}}>
-            <div className={`stat-card ${labaKas>=0?"green":"rose"}`}>
-              <div className="stat-label">💵 Laba/Rugi Kas</div>
-              <div className="stat-value">{fmt(Math.abs(labaKas))}</div>
-              <div className="stat-sub">{labaKas>=0?"✓ Untung":"✗ Rugi"} · tanpa penyusutan</div>
+            <div className={`stat-card ${(totM-totKKas)>=0?"green":"rose"}`}>
+              <div className="stat-label">💵 Saldo Kas Bersih</div>
+              <div className="stat-value">{fmt(Math.abs(totM-totKKas))}</div>
+              <div className="stat-sub">{(totM-totKKas)>=0?"✓ Surplus":"✗ Defisit"} · kas aktual</div>
             </div>
             <div className={`stat-card ${labaRugi>=0?"green":"rose"}`}>
               <div className="stat-label">📊 Laba/Rugi Akuntansi</div>
               <div className="stat-value">{fmt(Math.abs(labaRugi))}</div>
-              <div className="stat-sub">{labaRugi>=0?"✓ Untung":"✗ Rugi"} · penyusutan {fmt(totPenyAset)}</div>
+              <div className="stat-sub">{labaRugi>=0?"✓ Untung":"✗ Rugi"} · incl. penyusutan</div>
             </div>
             <div className="stat-card gold">
               <div className="stat-label">Tingkat Hunian</div>
@@ -2041,8 +2245,7 @@ function App() {
                   const tod=new Date(); tod.setHours(0,0,0,0);
                   const n=kamar.filter(k=>{
                     if(!k.akhirSewa||k.status!=="Terisi") return false;
-                    const a=new Date(k.akhirSewa); a.setHours(0,0,0,0);
-                    return Math.ceil((a-tod)/(1000*60*60*24))<=5;
+                    return selisihHari(k.akhirSewa,tod)!==null&&selisihHari(k.akhirSewa,tod)<=5;
                   }).length;
                   return n>0?<span style={{color:"#E65100",fontWeight:700}}> · {n} jatuh tempo</span>:null;
                 })()}
@@ -2060,8 +2263,13 @@ function App() {
             const rek = (nama,jenis) => sdBulan
               .filter(t=>(t.rekening||"Al Marwa")===nama && t.jenis===jenis)
               .reduce((s,t)=>s+t.jumlah,0);
-            const amIn=rek("Al Marwa","Pemasukan"), amOut=rek("Al Marwa","Pengeluaran");
-            const prIn=rek("Pribadi","Pemasukan"),  prOut=rek("Pribadi","Pengeluaran");
+            // Saldo kas = semua pendapatan - semua pengeluaran kas (termasuk beli aset)
+            const amIn=rek("Al Marwa","Pemasukan");
+            const amOut=sdBulan.filter(t=>(t.rekening||"Al Marwa")==="Al Marwa"&&t.jenis==="Pengeluaran").reduce((s,t)=>s+t.jumlah,0);
+            const amOutOps=sdBulan.filter(t=>(t.rekening||"Al Marwa")==="Al Marwa"&&t.jenis==="Pengeluaran"&&t.kategori!==KATEGORI_BELI_ASET).reduce((s,t)=>s+t.jumlah,0);
+            const amBeliAset=amOut-amOutOps;
+            const prIn=rek("Pribadi","Pemasukan");
+            const prOut=sdBulan.filter(t=>(t.rekening||"Al Marwa")==="Pribadi"&&t.jenis==="Pengeluaran").reduce((s,t)=>s+t.jumlah,0);
             const saldoAM = amIn - amOut;
             const saldoPr = prIn - prOut;
 
@@ -2108,7 +2316,10 @@ function App() {
                   <div className="stat-card" style={{borderTop:`3px solid ${saldoAM>=0?"var(--green)":"var(--rose)"}`}}>
                     <div className="stat-label">🏦 Saldo Al Marwa (Kas)</div>
                     <div className="stat-value" style={{color:saldoAM>=0?"var(--green)":"var(--rose)",fontSize:20}}>{fmt(Math.abs(saldoAM))}</div>
-                    <div className="stat-sub">{saldoAM>=0?"✓ Surplus":"✗ Defisit"} · {labelPeriode}</div>
+                    <div className="stat-sub">
+                      {saldoAM>=0?"✓ Surplus":"✗ Defisit"} · {labelPeriode}
+                      {amBeliAset>0&&<span style={{color:"var(--gold)",marginLeft:4}}>· Beli aset {fmt(amBeliAset)}</span>}
+                    </div>
                   </div>
                   <div className="stat-card" style={{borderTop:"3px solid #1565C0"}}>
                     <div className="stat-label" style={{color:"#1565C0"}}>🏛️ PPh Pasal 31E (11%)</div>
@@ -2194,20 +2405,34 @@ function App() {
         </>)}
 
         {/* TRANSAKSI */}
-        {tab==="transaksi" && (<>
+        {tab==="transaksi" && (()=>{
+          // Terapkan filter tambahan (jenis/kategori/rekening/kamar) di atas filtered yg sudah by bulan
+          const filteredT = filtered.filter(t=>{
+            if(filterTransaksi.jenis && t.jenis!==filterTransaksi.jenis) return false;
+            if(filterTransaksi.kategori && t.kategori!==filterTransaksi.kategori) return false;
+            if(filterTransaksi.rekening && (t.rekening||"Al Marwa")!==filterTransaksi.rekening) return false;
+            if(filterTransaksi.kamar && t.kamar!==filterTransaksi.kamar) return false;
+            return true;
+          });
+          return (<>
           <FilterBar filter={filter} setFilter={setFilter}/>
+          <TransaksiFilterBar transaksi={filtered} filter={filterTransaksi} setFilter={setFilterTransaksi}/>
           <div className="card">
             <div className="section-header">
               <div className="card-title" style={{marginBottom:0}}>💳 Daftar Transaksi</div>
-              <div style={{display:"flex",gap:8}}>
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                {sortTransaksi.col&&<span style={{fontSize:11,color:"var(--text-soft)"}}>Sort: {sortTransaksi.col} {sortTransaksi.dir===1?"▲":"▼"}</span>}
                 <button className="btn btn-secondary btn-sm" onClick={exportCSV}>📥 Export CSV</button>
                 <button className="btn btn-primary btn-sm" onClick={()=>{setForm({tanggal:today(),jenis:"Pemasukan"});setModal("transaksi");}}>+ Tambah</button>
               </div>
             </div>
             <hr className="divider"/>
-            <TransaksiTable data={filtered} onEdit={openEditTransaksi} onDelete={id=>{setTransaksi(p=>p.filter(t=>t.id!==id));showToast("Transaksi dihapus","info");}}/>
+            <TransaksiTable data={filteredT} onEdit={openEditTransaksi}
+              onDelete={id=>{setTransaksi(p=>p.filter(t=>t.id!==id));showToast("Transaksi dihapus","info");}}
+              sort={sortTransaksi} setSort={setSortTransaksi}/>
           </div>
-        </>)}
+          </>);
+        })()}
 
         {/* KAMAR */}
         {tab==="kamar" && (()=>{
@@ -2215,12 +2440,10 @@ function App() {
           // Kamar yang perlu notifikasi: akhirSewa dalam 5 hari ke depan
           const notifKamar = kamar.filter(k=>{
             if(!k.akhirSewa||k.status!=="Terisi") return false;
-            const akhir = new Date(k.akhirSewa); akhir.setHours(0,0,0,0);
-            const selisih = Math.ceil((akhir-today2)/(1000*60*60*24));
+            const selisih = selisihHari(k.akhirSewa,today2);
             return selisih>=0 && selisih<=5;
           }).map(k=>{
-            const akhir=new Date(k.akhirSewa); akhir.setHours(0,0,0,0);
-            const selisih=Math.ceil((akhir-today2)/(1000*60*60*24));
+            const selisih=selisihHari(k.akhirSewa,today2);
             return {...k,selisih};
           });
           return (<>
@@ -2251,13 +2474,16 @@ function App() {
                       </div>
                     </div>
                     <button className="btn btn-sm" style={{background:"var(--burgundy)",color:"white",whiteSpace:"nowrap",flexShrink:0}}
-                      onClick={()=>{setForm({_editId:k.id,nomor:k.nomor,penghuni:k.penghuni,harga:k.harga,masuk:k.masuk,akhirSewa:k.akhirSewa});setModal("kamar");}}>
+                      onClick={()=>{setForm({_editId:k.id,nomor:k.nomor,penghuni:k.penghuni,harga:k.harga,masuk:k.masuk,akhirSewa:k.akhirSewa,telepon:k.telepon||""});setModal("kamar");}}>
                       ✏️ Perpanjang
                     </button>
                   </div>
                 ))}
               </div>
             )}
+
+            {/* TEMPLATE WA */}
+            <TemplateWACard template={templateWA} setTemplate={setTemplateWA}/>
 
             {/* TABEL KAMAR */}
             <div className="card">
@@ -2269,22 +2495,41 @@ function App() {
               <div className="table-wrap">
                 <table>
                   <thead><tr>
-                    <th>No. Kamar</th><th>Penghuni</th><th>Harga/Bln</th>
-                    <th>Status</th><th>Tgl Masuk</th><th>Akhir Sewa</th><th>Sisa</th><th>Aksi</th>
+                    {[["nomor","No. Kamar"],["penghuni","Penghuni"],["harga","Harga/Bln"],
+                      ["status","Status"],["masuk","Tgl Masuk"],["akhirSewa","Akhir Sewa"]].map(([col,label])=>{
+                      const active=sortKamar.col===col&&sortKamar.dir!==0;
+                      const icon=active?(sortKamar.dir===1?"▲":"▼"):"↕";
+                      return (<th key={col} style={{cursor:"pointer",userSelect:"none",whiteSpace:"nowrap"}}
+                        onClick={()=>setSortKamar(s=>{
+                          if(s.col!==col) return {col,dir:1};
+                          if(s.dir===1) return {col,dir:-1};
+                          return {col:"",dir:0};
+                        })}>
+                        {label} <span style={{fontSize:10,opacity:active?1:0.3,color:active?"var(--burgundy)":"inherit"}}>{icon}</span>
+                      </th>);
+                    })}
+                    <th>Sisa</th><th>Aksi</th>
                   </tr></thead>
                   <tbody>
-                    {kamar.map(k=>{
-                      let selisihHari=null, labelSisa=null, warnaTag="var(--text-soft)", bgTag="rgba(0,0,0,0.05)";
-                      if(k.akhirSewa&&k.status==="Terisi"){
-                        const akhir=new Date(k.akhirSewa); akhir.setHours(0,0,0,0);
-                        selisihHari=Math.ceil((akhir-today2)/(1000*60*60*24));
-                        if(selisihHari<0){labelSisa="Kedaluwarsa";warnaTag="#C0392B";bgTag="rgba(192,57,43,0.1)";}
-                        else if(selisihHari===0){labelSisa="Hari ini!";warnaTag="#C0392B";bgTag="rgba(192,57,43,0.1)";}
-                        else if(selisihHari<=5){labelSisa=selisihHari+"h lagi";warnaTag="#E65100";bgTag="rgba(230,81,0,0.1)";}
-                        else if(selisihHari<=30){labelSisa=selisihHari+"h lagi";warnaTag="#C49A5A";bgTag="rgba(196,154,90,0.15)";}
-                        else{const bln=Math.floor(selisihHari/30);const hr=selisihHari%30;labelSisa=bln+"bln"+(hr>0?" "+hr+"h":"")+" lagi";warnaTag="var(--green)";bgTag="rgba(74,124,107,0.1)";}
+                    {[...kamar].sort((a,b)=>{
+                      if(!sortKamar.col||sortKamar.dir===0) return 0;
+                      const col=sortKamar.col;
+                      let va=a[col]||"", vb=b[col]||"";
+                      if(col==="harga"){ return sortKamar.dir*((Number(va)||0)-(Number(vb)||0)); }
+                      if(col==="masuk"||col==="akhirSewa"){ return sortKamar.dir*(new Date(va||0)-new Date(vb||0)); }
+                      if(col==="nomor"){ return sortKamar.dir*String(va).localeCompare(String(vb),"id",{numeric:true}); }
+                      return sortKamar.dir*String(va).localeCompare(String(vb),"id");
+                    }).map(k=>{
+                      let sisaHari=null, labelSisa=null, warnaTag="var(--text-soft)", bgTag="rgba(0,0,0,0.05)";
+                      if(k.akhirSewa&&k.status==="Terisi") sisaHari=selisihHari(k.akhirSewa,today2);
+                      if(sisaHari!==null){
+                        if(sisaHari<0){labelSisa="Kedaluwarsa";warnaTag="#C0392B";bgTag="rgba(192,57,43,0.1)";}
+                        else if(sisaHari===0){labelSisa="Hari ini!";warnaTag="#C0392B";bgTag="rgba(192,57,43,0.1)";}
+                        else if(sisaHari<=5){labelSisa=sisaHari+"h lagi";warnaTag="#E65100";bgTag="rgba(230,81,0,0.1)";}
+                        else if(sisaHari<=30){labelSisa=sisaHari+"h lagi";warnaTag="#C49A5A";bgTag="rgba(196,154,90,0.15)";}
+                        else{const bln=Math.floor(sisaHari/30);const hr=sisaHari%30;labelSisa=bln+"bln"+(hr>0?" "+hr+"h":"")+" lagi";warnaTag="var(--green)";bgTag="rgba(74,124,107,0.1)";}
                       }
-                      return (<tr key={k.id} style={selisihHari!==null&&selisihHari<=5?{background:"#FFF8F0"}:{}}>
+                      return (<tr key={k.id} style={sisaHari!==null&&sisaHari<=5?{background:"#FFF8F0"}:{}}>
                         <td><strong>{k.nomor}</strong></td>
                         <td>{k.penghuni}</td>
                         <td>{fmt(k.harga)}</td>
@@ -2297,7 +2542,31 @@ function App() {
                           {labelSisa&&<span style={{fontSize:12,fontWeight:700,color:warnaTag,padding:"3px 9px",borderRadius:8,background:bgTag,display:"inline-block"}}>{labelSisa}</span>}
                         </td>
                         <td><div className="actions">
-                          <button className="btn btn-secondary btn-sm" onClick={()=>{setForm({_editId:k.id,nomor:k.nomor,penghuni:k.penghuni,harga:k.harga,masuk:k.masuk,akhirSewa:k.akhirSewa||""});setModal("kamar");}}>✏️</button>
+                          {k.status==="Terisi" && (()=>{
+                            const tglFmt = k.akhirSewa ? parseDate(k.akhirSewa).toLocaleDateString("id-ID",{day:"numeric",month:"long",year:"numeric"}) : "-";
+                            const pesan = templateWA
+                              .replace(/{nama}/g, k.penghuni||"-")
+                              .replace(/{kamar}/g, k.nomor)
+                              .replace(/{tanggal}/g, tglFmt)
+                              .replace(/{harga}/g, fmt(k.harga));
+                            const noHP = (k.telepon||"").replace(/^0/,"62").replace(/[^0-9]/g,"");
+                            return noHP
+                              ? <a href={`https://wa.me/${noHP}?text=${encodeURIComponent(pesan)}`}
+                                  target="_blank" rel="noopener noreferrer"
+                                  className="btn btn-sm"
+                                  style={{background:"#25D366",color:"white",textDecoration:"none",
+                                    border:"none",padding:"5px 10px",borderRadius:8,fontSize:13,cursor:"pointer",
+                                    ...(sisaHari!==null&&sisaHari<=5?{animation:"pulse 1.5s infinite"}:{})}}
+                                  title="Buka WhatsApp">
+                                  💬 WA
+                                </a>
+                              : <button className="btn btn-secondary btn-sm"
+                                  title="Salin pesan (nomor HP belum diisi)"
+                                  onClick={()=>{navigator.clipboard.writeText(pesan).then(()=>showToast("✓ Pesan disalin ke clipboard!")).catch(()=>{const ta=document.createElement("textarea");ta.value=pesan;document.body.appendChild(ta);ta.select();document.execCommand("copy");document.body.removeChild(ta);showToast("✓ Pesan disalin!");});}}>
+                                  📋 Salin
+                                </button>;
+                          })()}
+                          <button className="btn btn-secondary btn-sm" onClick={()=>{setForm({_editId:k.id,nomor:k.nomor,penghuni:k.penghuni,harga:k.harga,masuk:k.masuk,akhirSewa:k.akhirSewa||"",telepon:k.telepon||""});setModal("kamar");}}>✏️</button>
                           <button className="btn btn-danger btn-sm" onClick={()=>{setKamar(p=>p.filter(x=>x.id!==k.id));showToast("Kamar dihapus","info");}}>✕</button>
                         </div></td>
                       </tr>);
@@ -2360,8 +2629,8 @@ function App() {
                 </div>
               </div>
               <div style={{marginTop:12,display:"flex",gap:20,fontSize:13,flexWrap:"wrap"}}>
-                <span style={{color:"var(--text-soft)"}}>Modal Awal (Aset Tetap−Kwj):
-                  <strong style={{color:"var(--burgundy)",marginLeft:4}}>{fmt(modalAwal)}</strong>
+                <span style={{color:"var(--text-soft)"}}>Modal Pemilik:
+                  <strong style={{color:"var(--burgundy)",marginLeft:4}}>{fmt(modalPemilik)}</strong>
                 </span>
                 <span style={{color:"var(--text-soft)"}}>Akum. Laba s/d {nTahun-1}:
                   <strong style={{color:akumLabaDitahan>=0?"var(--green)":"var(--rose)",marginLeft:4}}>{fmt(akumLabaDitahan)}</strong>
@@ -2380,7 +2649,7 @@ function App() {
                 <button className="btn btn-gold btn-sm" onClick={()=>window.print()}>🖨️ Cetak</button>
               </div>
               <hr className="divider"/>
-              <NeracaReport aset={aset} kewajiban={kewajiban} modalAwal={modalAwal} akumLabaDitahan={akumLabaDitahan} labaTahunIni={labaSDbulan} tahun={nTahun} bulan={nBulan} totAsetTetapBruto={totAsetTetapBruto} totKwj={totKwj}/>
+              <NeracaReport aset={aset} kewajiban={kewajiban} modalAwal={modalAwal} akumLabaDitahan={akumLabaDitahan} labaTahunIni={labaSDbulan} tahun={nTahun} bulan={nBulan} totKwj={totKwj} modalPemilik={modalPemilik}/>
             </div>
           </>
         )}
@@ -2396,6 +2665,45 @@ function App() {
 
         {/* ASET & KEWAJIBAN */}
         {tab==="aset" && (<>
+          {/* CARD MODAL PEMILIK */}
+          <div className="card" style={{marginBottom:20,border:"2px solid var(--burgundy)"}}>
+            <div className="section-header">
+              <div>
+                <div className="card-title" style={{marginBottom:4}}>💰 Modal Pemilik</div>
+                <div style={{fontSize:12,color:"var(--text-soft)"}}>
+                  Jumlah modal yang disetor pemilik saat memulai usaha. Diinput sekali, tidak berubah otomatis.
+                </div>
+              </div>
+            </div>
+            <hr className="divider"/>
+            <div style={{display:"flex",alignItems:"center",gap:16,flexWrap:"wrap"}}>
+              <div style={{flex:1,minWidth:200}}>
+                <label style={{fontSize:13,fontWeight:600,color:"var(--text-soft)",display:"block",marginBottom:6}}>
+                  Nilai Modal Pemilik (Rp)
+                </label>
+                <input type="number"
+                  style={{width:"100%",padding:"10px 14px",fontSize:15,borderRadius:10,
+                    border:"1.5px solid var(--border)",fontWeight:600}}
+                  value={modalPemilik}
+                  onChange={e=>setModalPemilik(Number(e.target.value)||0)}
+                  placeholder="Masukkan jumlah modal pemilik"/>
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:24,fontWeight:700,color:"var(--burgundy)",fontFamily:"'Playfair Display',serif"}}>
+                  {fmt(modalPemilik)}
+                </div>
+                <div style={{fontSize:11,color:"var(--text-soft)",marginTop:4}}>
+                  Nilai ini digunakan sebagai dasar perhitungan neraca
+                </div>
+              </div>
+            </div>
+            <div style={{marginTop:12,background:"var(--gold-light)",borderRadius:10,
+              padding:"10px 14px",fontSize:12,color:"var(--gold)",lineHeight:1.7}}>
+              💡 <strong>Contoh:</strong> Jika Anda membangun kos dengan uang sendiri Rp 500 juta,
+              maka Modal Pemilik = Rp 500.000.000. Pembelian aset baru dari pendapatan
+              <strong> tidak perlu mengubah angka ini</strong> — cukup tambahkan ke daftar aset di bawah.
+            </div>
+          </div>
           <div className="card">
             <div className="section-header">
               <div className="card-title" style={{marginBottom:0}}>🏢 Data Aset</div>
@@ -2420,12 +2728,12 @@ function App() {
                       <td style={{fontWeight:600,color:"var(--green)"}}>{fmt(a.nilai)}</td>
                       <td style={{color:"var(--text-soft)",fontSize:13}}>{a.tanggalBeli||"—"}</td>
                       <td style={{fontSize:13}}>
-                        {a.usiaPakai>0?(<>
+                        {a.usiaPakai>0?(<React.Fragment>
                           <div style={{fontWeight:600}}>{Math.floor(a.usiaPakai/12)}th {a.usiaPakai%12}bln</div>
                           {sisaBulan!==null&&<div style={{fontSize:11,color:statusPeny==="lunas"?"var(--rose)":statusPeny==="hampir"?"var(--gold)":"var(--green)"}}>
                             {statusPeny==="lunas"?"✓ Lunas":sisaBulan+"bln lagi"}
                           </div>}
-                        </>):<span style={{color:"var(--border)"}}>—</span>}
+                        </React.Fragment>):<span style={{color:"var(--border)"}}>—</span>}
                       </td>
                       <td style={{color:"var(--text-soft)"}}>
                         {statusPeny==="lunas"
@@ -2442,12 +2750,7 @@ function App() {
                 </tbody>
                 <tfoot><tr>
                   <td colSpan={3} style={{padding:"12px 16px",fontWeight:700,color:"var(--burgundy)",borderTop:"2px solid var(--border)"}}>Total Aset: {fmt(aset.reduce((s,a)=>s+a.nilai,0))}</td>
-                  <td colSpan={5} style={{padding:"12px 16px",color:"var(--text-soft)",borderTop:"2px solid var(--border)",fontSize:13}}>Penyusutan Aktif/Bln: {fmt(aset.filter(a=>a.jenis==="tetap").reduce((s,a)=>{
-                    if(!a.tanggalBeli||!a.usiaPakai) return s+a.penyusutan;
-                    const beli=new Date(a.tanggalBeli),now2=new Date();
-                    const terpakai=(now2.getFullYear()-beli.getFullYear())*12+(now2.getMonth()-beli.getMonth());
-                    return terpakai<a.usiaPakai?s+a.penyusutan:s;
-                  },0))}</td>
+                  <td colSpan={5} style={{padding:"12px 16px",color:"var(--text-soft)",borderTop:"2px solid var(--border)",fontSize:13}}>Penyusutan Aktif/Bln: {fmt(aset.filter(a=>a.jenis==="tetap").reduce((s,a)=>{const beli=a.tanggalBeli?new Date(a.tanggalBeli):null;if(!beli||!a.usiaPakai)return s+a.penyusutan;const now3=new Date();const terpakai=(now3.getFullYear()-beli.getFullYear())*12+(now3.getMonth()-beli.getMonth());return terpakai<a.usiaPakai?s+a.penyusutan:s;},0))}</td>
                 </tr></tfoot>
               </table>
             </div>
@@ -2718,6 +3021,10 @@ function App() {
                 <input placeholder="(kosongkan jika kosong)" value={form.penghuni||""} onChange={e=>setForm(f=>({...f,penghuni:e.target.value}))}/>
               </div>
               <div className="form-group">
+                <label>No. HP / WhatsApp</label>
+                <input placeholder="mis: 08123456789" value={form.telepon||""} onChange={e=>setForm(f=>({...f,telepon:e.target.value}))}/>
+              </div>
+              <div className="form-group">
                 <label>Tanggal Masuk</label>
                 <input type="date" value={form.masuk||""} onChange={e=>setForm(f=>({...f,masuk:e.target.value}))}/>
               </div>
@@ -2744,7 +3051,7 @@ function App() {
               {form.akhirSewa && (()=>{
                 const akhir=new Date(form.akhirSewa); akhir.setHours(0,0,0,0);
                 const tod=new Date(); tod.setHours(0,0,0,0);
-                const sisa=Math.ceil((akhir-tod)/(1000*60*60*24));
+                const sisa=selisihHari(form.akhirSewa,tod);
                 const warna=sisa<0?"var(--rose)":sisa<=5?"#E65100":sisa<=30?"var(--gold)":"var(--green)";
                 return <div className="form-group" style={{background:"var(--rose-pale)",borderRadius:10,padding:"10px 14px"}}>
                   <label>Info Sewa</label>
