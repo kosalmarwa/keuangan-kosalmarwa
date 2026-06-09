@@ -399,6 +399,137 @@ const INIT = {
 // ─── TEMPLATE WA CARD ───────────────────────────────────────────────────────
 const DEFAULT_TEMPLATE_WA = "Assalamu'alaikum Kak {nama} 🌸\n\nKami dari Kos Putri Almarwa ingin menginformasikan bahwa masa sewa Kamar {kamar} akan berakhir pada {tanggal}.\n\nApakah Kak {nama} berencana untuk memperpanjang masa sewa? 🙏\n\nHarga sewa saat ini: {harga}/bulan\n\nMohon konfirmasinya ya Kak, terima kasih 😊\n\nKos Putri Almarwa";
 
+// ─── MODAL RINCIAN DASHBOARD ────────────────────────────────────────────────
+function ModalRincian({info, onClose, bulan, tahun}) {
+  if(!info) return null;
+  const {jenis, data, label} = info;
+  const isM = jenis==="Pemasukan";
+  const hasRekening = !!label;
+  const rekeningLabel = label ? (label==="Al Marwa"?"🏦 Al Marwa":"👤 Pribadi") : "";
+  const [activeTab, setActiveTab] = React.useState("kategori");
+
+  // ── Kalkulasi ────────────────────────────────────────────────────────────
+  const total = data.reduce((s,t)=>s+t.jumlah,0);
+
+  // Per Kategori
+  const grp = {};
+  data.forEach(t=>{ grp[t.kategori]=(grp[t.kategori]||0)+t.jumlah; });
+  const sortedKat = Object.entries(grp).sort((a,b)=>b[1]-a[1]);
+
+  // Per Bulan — hanya untuk mode rekening (data akumulasi)
+  const grpBln = {};
+  data.forEach(t=>{
+    const d = new Date(t.tanggal);
+    const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+    grpBln[key] = (grpBln[key]||0)+t.jumlah;
+  });
+  const sortedBln = Object.entries(grpBln).sort((a,b)=>a[0].localeCompare(b[0]));
+
+  // Rentang periode
+  const periodeLabel = (() => {
+    if(!hasRekening) return `${BULAN[bulan-1]} ${tahun}`;
+    if(!sortedBln.length) return `s/d ${BULAN[bulan-1]} ${tahun}`;
+    const first = sortedBln[0][0];
+    const [fy,fm] = first.split("-").map(Number);
+    return `${BULAN[fm-1]} ${fy} s/d ${BULAN[bulan-1]} ${tahun} (${sortedBln.length} bulan)`;
+  })();
+
+  const accentColor = isM?"var(--green)":"var(--rose)";
+  const tabStyle = (t) => ({
+    padding:"7px 18px", fontSize:13, fontWeight:activeTab===t?700:500,
+    borderRadius:8, border:"none", cursor:"pointer",
+    background:activeTab===t?accentColor:"transparent",
+    color:activeTab===t?"white":"var(--text-soft)",
+    transition:"all .2s"
+  });
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" style={{maxWidth:520}} onClick={e=>e.stopPropagation()}>
+
+        {/* Judul */}
+        <div className="modal-title" style={{color:accentColor,marginBottom:4}}>
+          {isM?"📈 Rincian Pemasukan":"📉 Rincian Pengeluaran"}
+          {hasRekening && <span style={{fontSize:14,fontWeight:600,marginLeft:8,
+            padding:"2px 10px",borderRadius:8,background:"rgba(0,0,0,0.06)"}}>{rekeningLabel}</span>}
+        </div>
+        <div style={{fontSize:12,color:"var(--text-soft)",marginBottom:16}}>{periodeLabel}</div>
+
+        {/* Tab switcher — hanya tampil jika mode rekening */}
+        {hasRekening && (
+          <div style={{display:"flex",gap:4,background:"var(--rose-pale)",borderRadius:10,
+            padding:4,marginBottom:16,width:"fit-content"}}>
+            <button style={tabStyle("kategori")} onClick={()=>setActiveTab("kategori")}>Per Kategori</button>
+            <button style={tabStyle("bulan")} onClick={()=>setActiveTab("bulan")}>Per Bulan</button>
+          </div>
+        )}
+
+        {/* Tab: Per Kategori */}
+        {(activeTab==="kategori"||!hasRekening) && (
+          <div style={{maxHeight:340,overflowY:"auto"}}>
+            {sortedKat.length===0 && (
+              <div style={{padding:"20px",textAlign:"center",color:"var(--text-soft)"}}>
+                Tidak ada data {jenis.toLowerCase()}.
+              </div>
+            )}
+            {sortedKat.map(([kat,val])=>(
+              <div key={kat} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                padding:"10px 4px",borderBottom:"1px solid var(--border)"}}>
+                <div>
+                  <div style={{fontWeight:600,fontSize:14}}>{kat}</div>
+                  <div style={{fontSize:11,color:"var(--text-soft)"}}>
+                    {data.filter(t=>t.kategori===kat).length} transaksi
+                    {total>0?` · ${Math.round(val/total*100)}%`:""}
+                  </div>
+                </div>
+                <div style={{fontWeight:700,fontSize:14,color:accentColor}}>{fmt(val)}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Tab: Per Bulan */}
+        {activeTab==="bulan" && hasRekening && (
+          <div style={{maxHeight:340,overflowY:"auto"}}>
+            {sortedBln.length===0 && (
+              <div style={{padding:"20px",textAlign:"center",color:"var(--text-soft)"}}>
+                Tidak ada data {jenis.toLowerCase()}.
+              </div>
+            )}
+            {sortedBln.map(([key,val])=>{
+              const [fy,fm]=key.split("-").map(Number);
+              const pct = total>0?Math.round(val/total*100):0;
+              return (
+                <div key={key} style={{display:"flex",justifyContent:"space-between",
+                  alignItems:"center",padding:"9px 4px",borderBottom:"1px solid var(--border)"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:10}}>
+                    <div style={{width:80,fontSize:13,fontWeight:600}}>{BULAN[fm-1].slice(0,3)} {fy}</div>
+                    <div style={{width:120,height:6,borderRadius:4,background:"var(--border)",overflow:"hidden"}}>
+                      <div style={{width:`${pct}%`,height:"100%",borderRadius:4,background:accentColor,opacity:0.7}}/>
+                    </div>
+                    <div style={{fontSize:11,color:"var(--text-soft)",width:32}}>{pct}%</div>
+                  </div>
+                  <div style={{fontWeight:700,fontSize:14,color:accentColor}}>{fmt(val)}</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Total */}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+          padding:"12px 4px",borderTop:"2px solid var(--border)",marginTop:8}}>
+          <span style={{fontWeight:700,fontSize:14}}>Total {jenis}</span>
+          <span style={{fontWeight:800,fontSize:16,color:accentColor}}>{fmt(total)}</span>
+        </div>
+        <div className="modal-footer" style={{marginTop:12}}>
+          <button className="btn btn-secondary" onClick={onClose}>Tutup</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TemplateWACard({template, setTemplate}) {
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState(template);
@@ -826,6 +957,12 @@ function LabaRugiReport({transaksi, aset, bulan, tahun}) {
       ))}
       {!Object.keys(kGrp).length && <div style={{padding:"12px 16px",color:"var(--text-soft)",fontSize:13}}>Tidak ada data pengeluaran.</div>}
 
+      <div className="report-row" style={{borderTop:"1.5px dashed var(--border)",background:"rgba(123,45,62,0.04)",
+        display:"flex",justifyContent:"space-between",padding:"10px 16px",alignItems:"center"}}>
+        <span style={{fontWeight:700,color:"var(--burgundy)",fontSize:13}}>Subtotal Beban Tunai</span>
+        <span style={{fontWeight:700,color:"var(--rose)",fontSize:13}}>{fmt(totKTunai)}</span>
+      </div>
+
       {/* Penyusutan Aset Tetap sebagai beban non-kas */}
       {totPenyusutan>0 && (
         <>
@@ -851,7 +988,7 @@ function LabaRugiReport({transaksi, aset, bulan, tahun}) {
         </>
       )}
 
-      <div className="report-row subtotal"><span>Total Beban Operasional</span><span className="amount-neg">{fmt(totKTunai)}</span></div>
+      <div className="report-row subtotal"><span>Total Beban Operasional</span><span className="amount-neg">{fmt(totK)}</span></div>
 
       {/* Pembelian Aset — bukan beban, hanya info */}
       {totBeliAsetLR > 0 && (<>
@@ -1268,7 +1405,30 @@ function LabaRugiTahunan({transaksi, aset, jenisLabel}) {
                 </div>);
               })}
               {!katK.length && <div style={{padding:"12px 16px",color:"var(--text-soft)",fontSize:13}}>Tidak ada data.</div>}
-              <div className="report-row subtotal"><span>Total Pengeluaran</span><span className="amount-neg">{fmt(totK)}</span></div>
+              <div className="report-row" style={{borderTop:"1.5px dashed var(--border)",background:"rgba(123,45,62,0.04)",
+                display:"flex",justifyContent:"space-between",padding:"10px 16px",alignItems:"center"}}>
+                <span style={{fontWeight:700,color:"var(--burgundy)",fontSize:13}}>Subtotal Beban Tunai</span>
+                <span style={{fontWeight:700,color:"var(--rose)",fontSize:13}}>{fmt(totKTunai)}</span>
+              </div>
+              {totPenyusutanTahunan>0 && (<>
+                <div style={{padding:"6px 16px 2px",fontSize:11,fontWeight:700,textTransform:"uppercase",
+                  letterSpacing:"1px",color:"var(--gold)",marginTop:4}}>Beban Non-Kas</div>
+                {asetTetap.filter(a=>totPenyBln(0)>=0).map(a=>{
+                  const totalPenyAset=Array.from({length:12},(_,i)=>penyAsetBln(a,i)).reduce((x,y)=>x+y,0);
+                  return totalPenyAset>0?(<div className="report-row" key={a.id}>
+                    <span style={{color:"var(--text-soft)"}}>Penyusutan — {a.nama}
+                      <span style={{fontSize:11,marginLeft:6,padding:"1px 7px",borderRadius:8,
+                        background:"var(--gold-light)",color:"var(--gold)",fontWeight:600}}>non-kas</span>
+                    </span>
+                    <span className="amount-neg">{fmt(totalPenyAset)}</span>
+                  </div>):null;
+                })}
+                <div className="report-row" style={{borderTop:"1px dashed var(--border)",fontSize:13,color:"var(--text-soft)"}}>
+                  <span>Subtotal Penyusutan</span>
+                  <span style={{color:"var(--rose)",fontWeight:600}}>{fmt(totPenyusutanTahunan)}</span>
+                </div>
+              </>)}
+              <div className="report-row subtotal"><span>Total Beban Operasional</span><span className="amount-neg">{fmt(totK)}</span></div>
             </div>
           </div>
           <div className="report-row total" style={{marginTop:16,background:"linear-gradient(135deg,#2E7D32,#1B5E20)",borderRadius:10}}>
@@ -1668,6 +1828,7 @@ function App() {
   const [filterTransaksi, setFilterTransaksi] = React.useState({jenis:"",kategori:"",rekening:"",kamar:""});
   const [sortTransaksi, setSortTransaksi] = React.useState({col:"",dir:0});
   const [sortKamar, setSortKamar] = React.useState({col:"",dir:0});
+  const [modalRincian, setModalRincian] = React.useState(null); // null | {jenis:"Pemasukan"|"Pengeluaran", data:[]}
   const [templateWA, setTemplateWA] = React.useState(()=>{
     try{ const t=localStorage.getItem("almarwa_templateWA"); return t||"Assalamu'alaikum Kak {nama} 🌸\n\nKami dari Kos Putri Almarwa ingin menginformasikan bahwa masa sewa Kamar {kamar} akan berakhir pada {tanggal}.\n\nApakah Kak {nama} berencana untuk memperpanjang masa sewa? 🙏\n\nHarga sewa saat ini: {harga}/bulan\n\nMohon konfirmasinya ya Kak, terima kasih 😊\n\nKos Putri Almarwa"; }catch{ return "Assalamu'alaikum Kak {nama} 🌸\n\nKami dari Kos Putri Almarwa ingin menginformasikan bahwa masa sewa Kamar {kamar} akan berakhir pada {tanggal}.\n\nApakah Kak {nama} berencana untuk memperpanjang masa sewa? 🙏\n\nHarga sewa saat ini: {harga}/bulan\n\nMohon konfirmasinya ya Kak, terima kasih 😊\n\nKos Putri Almarwa"; }
   });
@@ -2211,16 +2372,18 @@ function App() {
           <FilterBar filter={filter} setFilter={setFilter}/>
           {/* Baris 1: Pemasukan & Pengeluaran Kas */}
           <div className="stat-grid" style={{gridTemplateColumns:"repeat(2,1fr)",marginBottom:12}}>
-            <div className="stat-card green">
+            <div className="stat-card green" style={{cursor:"pointer"}}
+              onClick={()=>setModalRincian({jenis:"Pemasukan",data:filtered.filter(t=>t.jenis==="Pemasukan")})}>
               <div className="stat-label">Total Pemasukan</div>
               <div className="stat-value">{fmt(totM)}</div>
-              <div className="stat-sub">{BULAN[filter.bulan-1]} {filter.tahun}</div>
+              <div className="stat-sub">{BULAN[filter.bulan-1]} {filter.tahun} · <span style={{fontSize:11,opacity:0.7}}>klik rincian ↗</span></div>
             </div>
-            <div className="stat-card rose">
+            <div className="stat-card rose" style={{cursor:"pointer"}}
+              onClick={()=>setModalRincian({jenis:"Pengeluaran",data:filtered.filter(t=>t.jenis==="Pengeluaran")})}>
               <div className="stat-label">Total Pengeluaran Kas</div>
               <div className="stat-value">{fmt(totKKas)}</div>
               <div className="stat-sub">
-                Operasional {fmt(totK)}{totBeliAset>0?` · Beli Aset ${fmt(totBeliAset)}`:""}
+                Operasional {fmt(totK)}{totBeliAset>0?` · Beli Aset ${fmt(totBeliAset)}`:""} · <span style={{fontSize:11,opacity:0.7}}>klik rincian ↗</span>
               </div>
             </div>
           </div>
@@ -2287,11 +2450,16 @@ function App() {
             const totalSaldo = saldoAMsetelahPajak + saldoPr;
 
             const labelPeriode = `s/d ${BULAN[filter.bulan-1]} ${filter.tahun}`;
-            const Card = ({label,val,sub,color,icon}) => (
-              <div className="stat-card" style={{borderTop:`3px solid ${color}`}}>
+            const dataAMIn  = sdBulan.filter(t=>(t.rekening||"Al Marwa")==="Al Marwa"&&t.jenis==="Pemasukan");
+            const dataAMOut = sdBulan.filter(t=>(t.rekening||"Al Marwa")==="Al Marwa"&&t.jenis==="Pengeluaran");
+            const dataPrIn  = sdBulan.filter(t=>(t.rekening||"Al Marwa")==="Pribadi"&&t.jenis==="Pemasukan");
+            const dataPrOut = sdBulan.filter(t=>(t.rekening||"Al Marwa")==="Pribadi"&&t.jenis==="Pengeluaran");
+            const Card = ({label,val,sub,color,icon,onClick,data}) => (
+              <div className="stat-card" style={{borderTop:`3px solid ${color}`,cursor:onClick?"pointer":"default"}}
+                onClick={onClick||undefined}>
                 <div className="stat-label">{icon} {label}</div>
                 <div className="stat-value" style={{color,fontSize:20}}>{fmt(Math.abs(val))}</div>
-                <div className="stat-sub">{sub}</div>
+                <div className="stat-sub">{sub}{onClick?<span style={{fontSize:10,opacity:0.6,marginLeft:4}}>· klik rincian ↗</span>:null}</div>
               </div>
             );
             return (<>
@@ -2311,8 +2479,8 @@ function App() {
                 </div>
                 {/* Baris 1: 4 kartu sejajar */}
                 <div className="stat-grid" style={{marginBottom:8}}>
-                  <Card label="Pendapatan Al Marwa"  val={amIn}   sub={labelPeriode} color="var(--green)" icon="▲"/>
-                  <Card label="Pengeluaran Al Marwa" val={amOut}  sub={labelPeriode} color="var(--rose)"  icon="▼"/>
+                  <Card label="Pendapatan Al Marwa"  val={amIn}   sub={labelPeriode} color="var(--green)" icon="▲" onClick={()=>setModalRincian({jenis:"Pemasukan",data:dataAMIn,label:"Al Marwa"})}/>
+                  <Card label="Pengeluaran Al Marwa" val={amOut}  sub={labelPeriode} color="var(--rose)"  icon="▼" onClick={()=>setModalRincian({jenis:"Pengeluaran",data:dataAMOut,label:"Al Marwa"})}/>
                   <div className="stat-card" style={{borderTop:`3px solid ${saldoAM>=0?"var(--green)":"var(--rose)"}`}}>
                     <div className="stat-label">🏦 Saldo Al Marwa (Kas)</div>
                     <div className="stat-value" style={{color:saldoAM>=0?"var(--green)":"var(--rose)",fontSize:20}}>{fmt(Math.abs(saldoAM))}</div>
@@ -2353,8 +2521,8 @@ function App() {
                   👤 Rekening Pribadi
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:16}}>
-                  <Card label="Pendapatan Pribadi"  val={prIn}   sub={labelPeriode} color="var(--green)" icon="▲"/>
-                  <Card label="Pengeluaran Pribadi" val={prOut}  sub={labelPeriode} color="var(--rose)"  icon="▼"/>
+                  <Card label="Pendapatan Pribadi"  val={prIn}   sub={labelPeriode} color="var(--green)" icon="▲" onClick={()=>setModalRincian({jenis:"Pemasukan",data:dataPrIn,label:"Pribadi"})}/>
+                  <Card label="Pengeluaran Pribadi" val={prOut}  sub={labelPeriode} color="var(--rose)"  icon="▼" onClick={()=>setModalRincian({jenis:"Pengeluaran",data:dataPrOut,label:"Pribadi"})}/>
                   <div className="stat-card" style={{borderTop:`3px solid ${saldoPr>=0?"var(--green)":"var(--rose)"}`}}>
                     <div className="stat-label">👤 Saldo Pribadi</div>
                     <div className="stat-value" style={{color:saldoPr>=0?"var(--green)":"var(--rose)",fontSize:20}}>{fmt(Math.abs(saldoPr))}</div>
@@ -2405,6 +2573,8 @@ function App() {
         </>)}
 
         {/* TRANSAKSI */}
+        {modalRincian && <ModalRincian info={modalRincian} onClose={()=>setModalRincian(null)} bulan={filter.bulan} tahun={filter.tahun}/>}
+
         {tab==="transaksi" && (()=>{
           // Terapkan filter tambahan (jenis/kategori/rekening/kamar) di atas filtered yg sudah by bulan
           const filteredT = filtered.filter(t=>{
