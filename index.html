@@ -65,6 +65,13 @@
 
     // Simpan semua data ke Google Sheets
     window.gsSave = async (data) => {
+      // ── PENGAMAN UTAMA: jangan pernah menimpa Sheets dengan data kosong ──
+      // Mencegah data hilang bila state belum sempat termuat dari Sheets.
+      const _totalRows = (data.transaksi?.length||0) + (data.kamar?.length||0) +
+                         (data.aset?.length||0) + (data.kewajiban?.length||0);
+      if(_totalRows === 0){
+        throw new Error('SAVE_DIBATALKAN: semua tabel kosong, penyimpanan dibatalkan demi keamanan.');
+      }
       await window.gsSignIn();
       const sheets = [
         { name:'Transaksi',   rows: data.transaksi,  headers:['id','tanggal','jenis','kategori','deskripsi','jumlah','kamar','rekening','bukti','buktiNama','buktiThumb','buktiDrive','buktiId'] },
@@ -108,7 +115,53 @@
           resource: { values: [['savedAt','modalPemilik'],[String(ts),String(data.modalPemilik||0)]] },
         });
       } catch(e) { /* Meta mungkin tidak ada, tidak apa-apa */ }
+      // ── CADANGAN OTOMATIS: simpan snapshot ke tab Backup (tidak pernah menghapus) ──
+      try { await window.gsBackup(data, ts); } catch(e){ console.warn('Backup gagal (data utama tetap tersimpan):', e); }
       return ts;
+    };
+
+    // Pastikan sebuah tab/sheet ada; buat + tulis header bila belum ada.
+    window.gsEnsureSheet = async (title, header) => {
+      let created = false;
+      try {
+        const meta = await gapi.client.sheets.spreadsheets.get({ spreadsheetId: GS_SPREADSHEET });
+        const exists = (meta.result.sheets||[]).some(sh => sh.properties.title === title);
+        if(!exists){
+          await gapi.client.sheets.spreadsheets.batchUpdate({
+            spreadsheetId: GS_SPREADSHEET,
+            resource: { requests: [{ addSheet: { properties: { title } } }] },
+          });
+          created = true;
+          if(header){
+            await gapi.client.sheets.spreadsheets.values.update({
+              spreadsheetId: GS_SPREADSHEET, range: title+'!A1',
+              valueInputOption: 'RAW', resource: { values: [header] },
+            });
+          }
+        }
+      } catch(e){ console.warn('ensureSheet', title, e); }
+      return created;
+    };
+
+    // Simpan snapshot data ke tab Backup. Memakai append → riwayat cadangan
+    // tidak pernah tertimpa/terhapus, jadi selalu bisa dipulihkan manual.
+    window.gsBackup = async (data, ts) => {
+      await window.gsEnsureSheet('Backup', ['timestamp','waktu','data_json']);
+      const snapshot = JSON.stringify({
+        transaksi:    data.transaksi  || [],
+        kamar:        data.kamar      || [],
+        aset:         data.aset       || [],
+        kewajiban:    data.kewajiban  || [],
+        modalPemilik: data.modalPemilik || 0,
+      });
+      const waktu = new Date(ts).toLocaleString('id-ID');
+      await gapi.client.sheets.spreadsheets.values.append({
+        spreadsheetId: GS_SPREADSHEET,
+        range: 'Backup!A:C',
+        valueInputOption: 'RAW',
+        insertDataOption: 'INSERT_ROWS',
+        resource: { values: [[ String(ts), waktu, snapshot ]] },
+      });
     };
 
     // Ambil timestamp terakhir dari Google Sheets (tanpa load semua data)
@@ -1895,6 +1948,7 @@ function App() {
   const [startupData, setStartupData] = useState(null);  // data dari sheets saat diff
   const [gsSignedIn,  setGsSignedIn]  = useState(false);
   const [retryCount,  setRetryCount]  = useState(0);
+  const [dataReady,   setDataReady]   = useState(false); // true setelah data dimuat dari Sheets
   const autoSaveTimer = React.useRef(null);
   const isSaving      = React.useRef(false);
 
@@ -1906,14 +1960,19 @@ function App() {
   // ── Auto-save ke Google Sheets (debounce 5 detik) ─────────────────────────
   useEffect(()=>{
     if(!gsSignedIn) return;
+    if(!dataReady) return; // JANGAN auto-save sebelum data selesai dimuat dari Sheets
     if(autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     setSyncStatus("pending");
     autoSaveTimer.current = setTimeout(()=>{ doAutoSave(); }, 5000);
     return ()=>{ if(autoSaveTimer.current) clearTimeout(autoSaveTimer.current); };
-  },[transaksi,kamar,aset,kewajiban,modalPemilik,gsSignedIn]);
+  },[transaksi,kamar,aset,kewajiban,modalPemilik,gsSignedIn,dataReady]);
 
   const doAutoSave = async (retries=0) => {
     if(isSaving.current) return;
+    // Gerbang keamanan: data harus sudah termuat & tidak boleh kosong
+    if(!dataReady) return;
+    const _totalRows = transaksi.length + kamar.length + aset.length + kewajiban.length;
+    if(_totalRows === 0){ setSyncStatus("idle"); setSyncMsg(""); return; }
     isSaving.current = true;
     setSyncStatus("saving"); setSyncMsg("Menyimpan ke Google Sheets...");
     try {
@@ -1984,6 +2043,7 @@ function App() {
         setStartupData(sheetsData);
         setStartupModal("uploadLokal");
         setSyncStatus("idle"); setSyncMsg("");
+        setDataReady(true); // data lokal ada isinya → aman untuk auto-save
       } else {
         // Sheets ada data → langsung pakai Sheets, tidak tanya
         applySheets(sheetsData);
@@ -2006,6 +2066,7 @@ function App() {
       setModalPemilik(Number(sheetsData.modalPemilik));
     setLoadedAt(sheetsData._savedAt || Date.now());
     setSyncStatus("saved"); setSyncTime(new Date());
+    setDataReady(true); // data sudah termuat → auto-save boleh berjalan
     showToast("✓ Data dimuat dari Google Sheets");
   };
 
